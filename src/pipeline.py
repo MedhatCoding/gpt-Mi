@@ -372,7 +372,12 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
 
     status = "generated"
     detail = ""
-    if cfg["telegram"]["enabled"]:
+    # A stale report may be useful for diagnostics, but must never be sent or
+    # published as a fresh daily recommendation. Fail closed until data catches up.
+    if data_d < exp:
+        status = "not_sent"
+        detail = f"توقف آمن: بيانات آخر جلسة {data_d} أقدم من الجلسة المتوقعة {exp}؛ لم يتم إرسال أو نشر توصيات."
+    elif cfg["telegram"]["enabled"]:
         if dry_run:
             status = "dry_run"
         else:
