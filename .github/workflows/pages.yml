@@ -19,6 +19,37 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Validate report freshness before publishing
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import date, datetime, timezone
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          path = Path("data/signals/latest.json")
+          if not path.exists():
+              raise SystemExit("رفض النشر: ملف التوصيات غير موجود.")
+          try:
+              report = json.loads(path.read_text(encoding="utf-8"))
+              data_date = date.fromisoformat(str(report["data_date"])[:10])
+              generated = datetime.fromisoformat(report["generated_at"])
+              if generated.tzinfo is None:
+                  raise ValueError("generated_at must include timezone")
+              now = datetime.now(ZoneInfo("Africa/Cairo"))
+              age_days = (now.date() - data_date).days
+              generated_age_hours = (now.astimezone(timezone.utc) - generated.astimezone(timezone.utc)).total_seconds() / 3600
+              if age_days < 0 or age_days > 7 or generated_age_hours < 0 or generated_age_hours > 168:
+                  raise SystemExit(
+                      f"رفض النشر: التقرير قديم/غير صالح؛ data_date={data_date}, "
+                      f"age_days={age_days}, generated_age_hours={generated_age_hours:.1f}"
+                  )
+              print(f"تقرير مقبول للنشر: {data_date}; العمر {age_days} يوم.")
+          except SystemExit:
+              raise
+          except Exception as exc:
+              raise SystemExit(f"رفض النشر: تعذر التحقق من التقرير: {exc}")
+          PY
       - name: Prepare public report data
         run: |
           mkdir -p docs/data
