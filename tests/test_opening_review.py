@@ -72,7 +72,7 @@ class OpeningReviewTests(unittest.TestCase):
 
     @patch("run_daily.fetch_live_quotes", return_value={
         "ok": True, "retrieved_at": "2026-10-28T11:00:00+00:00",
-        "quotes": [{"code": "TEST", "price": 10, "change_percent": 0, "as_of": self.now.isoformat()}],
+        "quotes": [{"code": "TEST", "price": 10, "change_percent": 0, "as_of": "2026-10-28T11:00:00+00:00"}],
     })
     @patch("run_daily.send_message")
     def test_attempt_is_persisted_before_telegram_send(self, send, quotes):
