@@ -296,6 +296,20 @@ def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False)
 
             time.sleep(d["request_sleep"])
 
+        # A successful HTTP response can still contain stale candles. If Yahoo
+        # did not advance the cache, try the bounded EODHD fallback for a recent overlap.
+        yahoo_stale = (
+            fresh is not None and len(fresh) > 0 and cached is not None and len(cached) > 0
+            and fresh.index[-1].date() <= cached.index[-1].date()
+        )
+        if yahoo_stale and not offline and token and _eodhd_budget(state, cfg) > 0:
+            state["eodhd"]["calls"] += 1
+            recent = fetch_eodhd(code, token, (cached.index[-1] - timedelta(days=10)).date())
+            if recent is not None and len(recent) and recent.index[-1].date() > fresh.index[-1].date():
+                fresh = pd.concat([fresh, recent])
+                fresh = fresh[~fresh.index.duplicated(keep="last")].sort_index()
+                row["note"] = "Yahoo لم يقدم شموعًا أحدث؛ تم التحديث من EODHD"
+
         if fresh is not None and len(fresh) >= 1:
             merged = fresh
             if cached is not None and len(cached):
@@ -303,7 +317,7 @@ def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False)
                 merged = merged[~merged.index.duplicated(keep="last")].sort_index()
             write_cache(code, merged)
             source = "yahoo" if cached is None else "cache+yahoo"
-            if row["note"].startswith("استكمال التاريخ الأقدم"):
+            if "EODHD" in row["note"] or row["note"].startswith("استكمال التاريخ الأقدم"):
                 source += "+eodhd"
             row.update(source=source, bars=len(merged), first_date=str(merged.index[0].date()), last_date=str(merged.index[-1].date()), coverage_years=round((merged.index[-1] - merged.index[0]).days / 365.25, 2))
         elif cached is not None:
