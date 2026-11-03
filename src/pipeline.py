@@ -239,6 +239,25 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     if freshness_blocked:
         result = build_result(frames, regime_df, cls, len(codes), cfg)
         print(f"  [DATA QUALITY] تم إيقاف الشراء: البيانات {result['data_date']} أقدم من الجلسة المتوقعة {exp_session}.")
+    # Do not overwrite latest.json/report/latest.json or the track record with a
+    # stale snapshot. The previous known-good report remains visible, and this
+    # run exits before any publication/Telegram side effects.
+    if date.fromisoformat(result["data_date"]) < exp_session:
+        detail = (
+            f"توقف آمن: آخر جلسة في البيانات {result['data_date']} "
+            f"أقدم من الجلسة المتوقعة {exp_session}؛ "
+            "تم الاحتفاظ بآخر تقرير منشور دون استبداله ببيانات قديمة."
+        )
+        print(f"  [DATA QUALITY] {detail}")
+        return {
+            "status": "not_sent",
+            "detail": detail,
+            "data_date": result["data_date"],
+            "expected_session": exp_session.isoformat(),
+            "regime": result["regime"]["label_ar"],
+            "buys": [],
+            "warnings": [detail],
+        }
     sharia_codes = uni.loc[uni["sharia_verified"], "code"].tolist()
     sharia_parts = [prices[c]["close"].rename(c) for c in sharia_codes if c in prices]
     # Proxy only: current constituents are not historical index membership.
