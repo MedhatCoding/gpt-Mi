@@ -1,0 +1,89 @@
+Traceback (most recent call last):
+  File "/home/runner/work/gpt-Mi/gpt-Mi/tests/test_engine.py", line 1172, in <module>
+    fn()
+  File "/home/runner/work/gpt-Mi/gpt-Mi/tests/test_engine.py", line 961, in test_streamlit_app_smoke_run
+    _run_app()
+  File "/home/runner/work/gpt-Mi/gpt-Mi/tests/test_engine.py", line 908, in _run_app
+    runpy.run_path(str(ROOT / "app" / "streamlit_app.py"), run_name="__main__")
+  File "<frozen runpy>", line 291, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/runner/work/gpt-Mi/gpt-Mi/app/streamlit_app.py", line 157, in <module>
+    st.stop()
+  File "/home/runner/work/gpt-Mi/gpt-Mi/tests/test_engine.py", line 883, in stop
+    raise StopApp()
+StopApp
+  ok   test_backtest_runs_and_no_overlap_per_symbol
+  ok   test_backtest_underperformance_is_reported
+  ok   test_bear_universe_gives_no_buys
+  ok   test_bull_universe_gives_valid_picks
+  ok   test_component_stats_needs_min_trades_and_finds_real_separation
+  ok   test_expected_last_session
+  ok   test_fund_catalog_has_published_sharia_and_gold_entries
+  [EODHD] THROTTLE: HTTP 404
+  [EODHD] THROTTLE: HTTP 404
+  ok   test_history_backfill_is_throttled_for_free_sources
+  ok   test_history_lookback_and_walk_forward_ml_are_configured
+  ok   test_illiquid_and_stale_are_excluded
+  ok   test_indicators_are_causal
+  ok   test_limit_down_forces_avoid_and_blocks_buy
+  ok   test_llm_notes_are_validated
+  ok   test_market_freshness_gate_suppresses_buys_and_preserves_fresh_signals
+  ok   test_message_content_and_size
+  ok   test_ml_dataset_uses_forward_returns_and_drops_unlabelled_tail
+  ok   test_ml_fails_closed_when_history_is_too_short
+  ok   test_near_limit_caution_appears_for_watch_or_buy
+  ok   test_number_guard
+  ok   test_personal_sharia_universe_includes_index_and_audited_extras_only
+الأسهم المحللة: 53 (قائمة مرجعية 48 | EGX33 10 | إضافات شريعة خارج المؤشر 53 | وضع الدمج: sharia_union)
+  ... 20/53
+  ... 40/53
+تم تحديث نتائج الاختبار التاريخي.
+الذكاء الاصطناعي: {'provider': 'gemini', 'ok': False, 'error': 'GEMINI_API_KEY غير مضبوط', 'dropped_notes': 0}
+الأسهم المحللة: 53 (قائمة مرجعية 48 | EGX33 10 | إضافات شريعة خارج المؤشر 53 | وضع الدمج: sharia_union)
+  ... 20/53
+  ... 40/53
+تم تحديث نتائج الاختبار التاريخي.
+الذكاء الاصطناعي: {'provider': 'gemini', 'ok': False, 'error': 'GEMINI_API_KEY غير مضبوط', 'dropped_notes': 0}
+الأسهم المحللة: 53 (قائمة مرجعية 48 | EGX33 10 | إضافات شريعة خارج المؤشر 53 | وضع الدمج: sharia_union)
+  ... 20/53
+  ... 40/53
+  ok   test_pipeline_dry_run_and_missing_secrets_and_alerts
+الأسهم المحللة: 53 (قائمة مرجعية 48 | EGX33 10 | إضافات شريعة خارج المؤشر 53 | وضع الدمج: sharia_union)
+  ... 20/53
+  ... 40/53
+تم تحديث نتائج الاختبار التاريخي.
+الذكاء الاصطناعي: {'provider': 'gemini', 'ok': False, 'error': 'GEMINI_API_KEY غير مضبوط', 'dropped_notes': 0}
+تخطي التشغيل: تقرير اليوم اتبعت بالفعل
+تخطي التشغيل: اليوم إجازة أسبوعية (الجمعة/السبت)
+  ok   test_pipeline_end_to_end
+  ok   test_portfolio_requires_explicit_current_sharia_verification_to_increase
+  [data] تم استبعاد 2 شمعة OHLCV غير منطقية
+  ok   test_price_clean_rejects_impossible_ohlc_candles
+  ok   test_report_attempt_guard_prevents_duplicate_daily_send
+  ok   test_rsi_bounds_and_extremes
+  ok   test_seasonality_has_no_future_data_leakage
+  ok   test_seasonality_has_no_future_leakage
+  ok   test_sharia_extra_requires_audited_approval
+  ok   test_sharia_universe_prefers_egx33_shariah_benchmark_cache
+  ok   test_sharia_universe_requires_recent_source_for_out_of_index_shares
+  ok   test_short_yahoo_backfill_uses_budgeted_eodhd_for_older_history
+  ok   test_should_run_rules
+  ok   test_sim_target_stop_gap_and_skip
+  ok   test_sim_time_exit
+  ok   test_sma_and_atr
+الأسهم المحللة: 53 (قائمة مرجعية 48 | EGX33 10 | إضافات شريعة خارج المؤشر 53 | وضع الدمج: sharia_union)
+  ... 20/53
+  ... 40/53
+تم تحديث نتائج الاختبار التاريخي.
+الذكاء الاصطناعي: {'provider': 'gemini', 'ok': False, 'error': 'GEMINI_API_KEY غير مضبوط', 'dropped_notes': 0}
+  FAIL test_streamlit_app_smoke_run: StopApp: 
+  ok   test_synthetic_sharia_index_does_not_forward_fill_missing_prices
+  ok   test_telegram_split_and_fallback_and_errors
+  ok   test_track_record_carries_components_through_pipeline
+  ok   test_track_record_logging_is_idempotent_and_resolves
+  ok   test_ui_html_builders
+  ok   test_universe_modes_on_real_files
+  ok   test_unverified_candidates_do_not_consume_buy_slots
+
+43/44 passed

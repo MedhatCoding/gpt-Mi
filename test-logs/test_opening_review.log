@@ -1,0 +1,9 @@
+../opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/tempfile.py:934: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/tmpg_1aczdo'>
+  _warnings.warn(warn_message, ResourceWarning)
+/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/tempfile.py:934: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/tmp9gt35kxu'>
+  _warnings.warn(warn_message, ResourceWarning)
+...
+----------------------------------------------------------------------
+Ran 5 tests in 0.032s
+
+OK
