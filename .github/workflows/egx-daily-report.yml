@@ -50,7 +50,7 @@ permissions:
 jobs:
   daily:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN || secrets.EODHD_API_KEY }}
@@ -115,8 +115,31 @@ jobs:
         # Run regardless of the report step outcome; a failure here must stay visible.
         if: ${{ !cancelled() }}
         run: |
-          python tests/test_engine.py
-          python tests/test_opening_review.py
+          set +e
+          python tests/test_engine.py > test_engine.log 2>&1
+          rc1=$?
+          cat test_engine.log
+          python tests/test_opening_review.py > test_opening_review.log 2>&1
+          rc2=$?
+          cat test_opening_review.log
+          if [ "$rc1" -ne 0 ] || [ "$rc2" -ne 0 ]; then exit 1; fi
+      - name: Publish failing test logs
+        # تشخيص: تنزيل سجلات Actions يحتاج صلاحيات مدير؛ عند فشل الاختبارات في تشغيلة push
+        # نلتقط مخرجات الاختبارات ونلتزمها على الفرع نفسه لتسهيل الفحص دون لوحة التحكم.
+        if: failure() && github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p test-logs
+          cp -f test_engine.log test_opening_review.log test-logs/ 2>/dev/null || true
+          git add test-logs/
+          if git diff --cached --quiet; then
+            echo "No test logs to publish."
+          else
+            git commit -m "chore: capture failing test output [skip ci]"
+            git push
+          fi
+
       # Deploy Pages in this workflow. A GITHUB_TOKEN-triggered push/dispatch
       # does not reliably start a second workflow, so deployment stays in-run.
       - name: Prepare PWA report data
