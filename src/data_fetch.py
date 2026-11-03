@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -232,10 +233,42 @@ def fetch_market_indices(cfg: dict, state: dict, offline: bool = False) -> dict:
             }
     return result
 
+# ---------------------------------------------------------------- جلسة السوق المتوقعة
+
+def expected_latest_session(now: datetime, cfg: dict) -> date:
+    """آخر جلسة EGX يُفترض توافر إغلاقها عند وقت التشغيل."""
+    market = cfg.get("market", {})
+    tz = ZoneInfo(market.get("timezone", "Africa/Cairo"))
+    local_now = now.replace(tzinfo=tz) if now.tzinfo is None else now.astimezone(tz)
+    weekdays = set(market.get("trading_weekdays", [6, 0, 1, 2, 3]))
+    holidays_file = PRICES.parent / "holidays.txt"
+    holidays: set[date] = set()
+    if holidays_file.exists():
+        for line in holidays_file.read_text(encoding="utf-8").splitlines():
+            value = line.split("#", 1)[0].strip()
+            if value:
+                try:
+                    holidays.add(date.fromisoformat(value))
+                except ValueError:
+                    continue
+    day = local_now.date()
+    if not (local_now.hour >= int(market.get("session_close_hour", 15))
+            and day.weekday() in weekdays and day not in holidays):
+        day -= timedelta(days=1)
+    for _ in range(32):
+        if day.weekday() in weekdays and day not in holidays:
+            return day
+        day -= timedelta(days=1)
+    return day
+
+
 # ---------------------------------------------------------------- التحديث الكامل
-def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False) -> pd.DataFrame:
+def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False,
+               now: datetime | None = None) -> pd.DataFrame:
     """يحدّث الكاش لكل الرموز ويرجع جدول التغطية."""
     d = cfg["data"]
+    market_now = now or datetime.now(ZoneInfo(cfg.get("market", {}).get("timezone", "Africa/Cairo")))
+    expected_session = expected_latest_session(market_now, cfg)
     token = _eodhd_token()
     report = []
 
@@ -296,19 +329,32 @@ def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False)
 
             time.sleep(d["request_sleep"])
 
-        # A successful HTTP response can still contain stale candles. If Yahoo
-        # did not advance the cache, try the bounded EODHD fallback for a recent overlap.
-        yahoo_stale = (
+        # A successful Yahoo response may still be behind the latest expected EGX
+        # session even when it advances the local cache. Freshness is measured against
+        # the market calendar, not merely against the previous cached candle.
+        yahoo_behind_cache = (
             fresh is not None and len(fresh) > 0 and cached is not None and len(cached) > 0
             and fresh.index[-1].date() <= cached.index[-1].date()
         )
+        yahoo_behind_market = fresh is not None and len(fresh) > 0 and fresh.index[-1].date() < expected_session
+        yahoo_stale = yahoo_behind_cache or yahoo_behind_market
         if yahoo_stale and not offline and token and _eodhd_budget(state, cfg) > 0:
             state["eodhd"]["calls"] += 1
-            recent = fetch_eodhd(code, token, (cached.index[-1] - timedelta(days=10)).date())
-            if recent is not None and len(recent) and recent.index[-1].date() > fresh.index[-1].date():
-                fresh = pd.concat([fresh, recent])
+            if cached is not None and len(cached):
+                fallback_start = (cached.index[-1] - timedelta(days=10)).date()
+            else:
+                fallback_start = expected_session - timedelta(days=14)
+            recent = fetch_eodhd(code, token, fallback_start)
+            if recent is not None and len(recent):
+                fresh = pd.concat([fresh, recent]) if fresh is not None and len(fresh) else recent
                 fresh = fresh[~fresh.index.duplicated(keep="last")].sort_index()
-                row["note"] = "Yahoo لم يقدم شموعًا أحدث؛ تم التحديث من EODHD"
+                if fresh.index[-1].date() >= expected_session:
+                    row["note"] = "Yahoo لم يقدم أحدث جلسة متوقعة؛ تم استكمال التحديث من EODHD"
+                else:
+                    row["note"] = (
+                        f"تحذير: Yahoo وEODHD لم يوفرا الجلسة المتوقعة {expected_session}؛ "
+                        f"آخر شمعة متاحة {fresh.index[-1].date()}"
+                    )
 
         if fresh is not None and len(fresh) >= 1:
             merged = fresh
