@@ -341,6 +341,34 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
                     f"(منذ {review_age} يومًا). الأسهم تظل في التحليل لكن يلزم إعادة التحقق من المصدر الشرعي قبل الاعتماد عليها."
                 )
 
+    # A stale run is diagnostic-only. Do not replace the last published report,
+    # append stale signals to the track record, or advance any daily state.
+    # Otherwise a failed provider refresh can make an old snapshot look newly generated.
+    if data_d < exp:
+        diagnostic = {
+            "status": "blocked_stale_data",
+            "generated_at": now.isoformat(timespec="seconds"),
+            "data_date": data_d.isoformat(),
+            "expected_session": exp.isoformat(),
+            "symbols_with_data": int(len(prices)),
+            "universe_size": int(len(codes)),
+            "coverage_rows": int(len(cov)),
+            "source_counts": cov["source"].astype(str).value_counts().to_dict() if "source" in cov else {},
+            "warnings": warnings,
+        }
+        _write_json(C.DATA / "diagnostics" / "last_run.json", diagnostic)
+        print(f"  [DATA QUALITY] لم يتم تحديث التقرير المنشور: البيانات {data_d} أقدم من الجلسة المتوقعة {exp}.")
+        return {
+            "status": "not_sent",
+            "detail": f"توقف آمن: بيانات آخر جلسة {data_d} أقدم من الجلسة المتوقعة {exp}؛ احتُفظ بآخر تقرير منشور ولم تُسجّل توصيات جديدة.",
+            "data_date": result["data_date"],
+            "expected_session": exp.isoformat(),
+            "regime": result["regime"]["label_ar"],
+            "buys": [],
+            "warnings": warnings,
+            "diagnostic": "data/diagnostics/last_run.json",
+        }
+
     # ---- سجل التوصيات
     hist = load_history()
     hist = update_history(hist, prices, cfg)
