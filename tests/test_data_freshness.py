@@ -1,10 +1,14 @@
 """Regression tests for expected EGX session detection."""
 import tempfile
 import unittest
+import sys
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from src import data_fetch
 
