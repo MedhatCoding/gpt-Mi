@@ -203,13 +203,14 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
         f"| وضع الدمج: {cfg['universe']['mode']})"
     )
 
-    # Refresh index caches first so Sharia analysis can use EGX33 as its benchmark.
+    # Refresh the stock universe before spending the limited EODHD request budget
+    # on benchmark/index history. Stale stock quotes therefore get first priority.
+    cov = refresh_all(cfg, codes, state, offline=offline, now=now)
+    prices = load_prices(codes, cfg, now)
     market_indices = fetch_market_indices(cfg, state, offline=offline)
     bench = fetch_benchmark(cfg, state, offline=offline)
     live_market = fetch_oanor_market() if not offline else None
     funds = build_fund_overlay(bench, cfg, state=state)
-    cov = refresh_all(cfg, codes, state, offline=offline)
-    prices = load_prices(codes, cfg, now)
     if len(prices) < max(5, int(0.5 * len(codes))):
         raise DataError(f"بيانات غير كافية: {len(prices)} سهم فقط من {len(codes)} وصلت بيانات كافية (Yahoo/EODHD).")
 
