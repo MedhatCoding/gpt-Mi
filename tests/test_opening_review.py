@@ -21,11 +21,11 @@ class OpeningReviewTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.signals = Path(self.tmp.name)
         self.now = datetime(2026, 10, 28, 11, 0, tzinfo=timezone.utc)
-        self.cfg = {"market": {"timezone": "Africa/Cairo"}}
+        self.cfg = {"market": {"timezone": "Africa/Cairo", "trading_weekdays": [6, 0, 1, 2, 3], "session_close_hour": 14}}
         self.report_path = self.signals / "latest.json"
         self.report = {
             "generated_at": self.now.isoformat(),
-            "data_date": "2026-10-28",
+            "data_date": "2026-10-27",
             "picks": [{
                 "signal": "BUY", "code": "TEST", "name": "Test",
                 "entry_low": 9, "entry_high": 11, "stop": 8, "t1": 13,
