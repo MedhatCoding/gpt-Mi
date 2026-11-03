@@ -159,6 +159,8 @@ jobs:
               print(f"REPORT_GENERATED_AT={report.get('generated_at', 'unknown')}")
               print(f"REPORT_ANALYZED={report.get('analyzed', 'unknown')}")
               print(f"REPORT_UNIVERSE={report.get('universe_size', 'unknown')}")
+              print(f"REPORT_FILE_MTIME_UTC={p.stat().st_mtime}")
+              print(f"REPORT_FRESHNESS_GUARD={'data_date' in report and bool(report.get('data_date'))}")
           except Exception as exc:
               print(f"REPORT_STATUS=invalid_json: {exc}")
           PY
