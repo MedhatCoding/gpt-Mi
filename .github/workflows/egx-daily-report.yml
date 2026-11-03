@@ -119,6 +119,7 @@ jobs:
         run: |
           python tests/test_engine.py
           python tests/test_opening_review.py
+          python tests/test_data_freshness.py
       # Deploy Pages in this workflow. A GITHUB_TOKEN-triggered push/dispatch
       # does not reliably start a second workflow, so deployment stays in-run.
       - name: Prepare PWA report data
