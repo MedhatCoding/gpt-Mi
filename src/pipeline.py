@@ -23,7 +23,6 @@ from .universe import build_universe
 from .news import fetch_news
 from .portfolio import evaluate as evaluate_portfolio, risk_summary as portfolio_risk_summary
 from .portfolio_store import github_load, local_load
-from .portfolio import evaluate, risk_summary
 from .data_quality import apply_market_freshness_gate
 
 
@@ -275,18 +274,10 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     except Exception as e:
         print(f"  [NEWS] تعذر جلب الأخبار: {type(e).__name__}")
         result["news"] = {"market": [], "companies": [], "error": type(e).__name__}
-    # تحليل المحفظة المحفوظة (إن وُجدت) حتى يدخل في تقرير الصباح تلقائيًا.
-    try:
-        from .portfolio_store import load_for_daily
-        holdings = load_for_daily()
-        result["portfolio"] = {"holdings": holdings, "enabled": bool(holdings)}
-        if holdings:
-            pdf = evaluate(holdings, latest, funds, result["regime"]["label"], float(cfg.get("portfolio", {}).get("max_single_position_pct", 25)))
-            result["portfolio"]["summary"] = risk_summary(pdf)
-            result["portfolio"]["decisions"] = pdf.to_dict("records")
-    except Exception as e:
-        print(f"  [PORTFOLIO] تعذر تحميل المحفظة: {type(e).__name__}")
-        result["portfolio"] = {"holdings": [], "enabled": False, "error": type(e).__name__}
+    # مفتاح المحفظة لازم يكون موجودًا دائمًا بشكل متوقع للواجهة والتقرير حتى لو
+    # مفيش مراكز. القيم الفعلية (summary/decisions/encrypted_sync) بتتكتب في الكتلة
+    # الصحيحة أعلاه التي بتقرأ الإشارة والتحقق الشرعي من جدول الإشارات نفسه.
+    result.setdefault("portfolio", {"holdings": [], "enabled": False, "encrypted_sync": False})
     result["generated_at"] = now.isoformat(timespec="seconds")
 
     # ---- ملاحظات جودة البيانات
@@ -425,7 +416,13 @@ def run(cfg: dict | None = None, force: bool = False, dry_run: bool = False, off
         return _execute(cfg, now, state, dry_run, offline, force)
     except Exception as e:  # noqa: BLE001
         if notify_errors and not dry_run:
-            _alert(cfg, f"{type(e).__name__}: {e}")
+            day = now.date().isoformat()
+            # تنبيه واحد كحد أقصى في اليوم: نافذة الإرسال العريضة بترجّع المحاولة
+            # كل 10 دقائق، ومنع التكرار بيحمي المستخدم من سيل تنبيهات لنفس المشكلة.
+            if state.get("last_alert_day") != day:
+                state["last_alert_day"] = day
+                state["last_alert_error"] = f"{type(e).__name__}: {e}"
+                _alert(cfg, f"{type(e).__name__}: {e}")
         raise
     finally:
         C.save_state(state)

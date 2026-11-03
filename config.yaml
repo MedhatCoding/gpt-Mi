@@ -5,7 +5,8 @@
 market:
   timezone: "Africa/Cairo"
   trading_weekdays: [6, 0, 1, 2, 3]
-  report_window: ["08:50", "09:20"] # Daily report target: 09:00 Africa/Cairo; runner and state guard prevent duplicates
+  report_window: ["08:50", "12:30"] # تقرير الصباح حوالي 09:00 بتوقيت القاهرة؛ النهاية العريضة عمدًا لتتشامل تشغيلات GitHub المتأخرة، وحرس الحالة يمنع الإرسال المكرر
+  opening_review_window: ["10:50", "12:30"] # مراجعة الأسعار بعد ساعة من الافتتاح
   session_close_hour: 15
 universe:
   mode: "sharia_union"

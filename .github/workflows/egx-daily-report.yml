@@ -14,13 +14,13 @@ on:
       - "data/universe.csv"
       - "data/egx33.txt"
       - "data/sharia_extra.csv"
-      - "tests/**"
 
-  # Retry every 10 minutes across the UTC hours that cover Cairo 09:00 and 11:00
-  # in both UTC+2 (winter) and UTC+3 (summer). Python windows + state guards
-  # make retries idempotent and prevent duplicate reports/reviews.
+  # Retry every 10 minutes across the UTC hours that cover the Cairo report and
+  # opening-review windows in both UTC+2 (winter) and UTC+3 (summer). Minute
+  # offsets avoid the crowded :00/:10 slots. Python windows + state guards make
+  # retries idempotent and prevent duplicate reports/reviews.
   schedule:
-    - cron: "*/10 6-9 * * *"
+    - cron: "7-57/10 6-10 * * *"
 
   workflow_dispatch:
     inputs:
@@ -79,17 +79,11 @@ jobs:
         if: github.event_name != 'push'
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            # The UTC cron covers both Cairo UTC+2 and UTC+3 seasons.
-            # Python applies the exact 08:50-09:20 and 10:50-11:20 local windows,
-            # plus weekday/holiday and duplicate-send guards.
-            CAIRO_HOUR="$(TZ=Africa/Cairo date +%H)"
-            if [ "$CAIRO_HOUR" = "09" ]; then
-              python run_daily.py
-            elif [ "$CAIRO_HOUR" = "11" ]; then
-              python run_daily.py --opening-review
-            else
-              echo "No scheduled task for Cairo local hour $CAIRO_HOUR; safely skipping."
-            fi
+            # The UTC cron covers both Cairo UTC+2 and UTC+3 seasons. Python applies
+            # the configured report_window and opening_review_window plus weekday,
+            # holiday, and duplicate-send state guards, so every tick can safely try
+            # both; out-of-window or already-sent ticks skip quickly and idempotently.
+            python run_daily.py && python run_daily.py --opening-review
           elif [ "${{ inputs.dry_run }}" = "true" ]; then
             if [ "${{ inputs.force }}" = "true" ]; then
               python run_daily.py --force --dry-run
@@ -103,7 +97,9 @@ jobs:
           fi
 
       - name: Commit generated data
-        if: github.event_name != 'push' && inputs.dry_run != true
+        # Commit state.json and any fetched data even when the report step failed:
+        # daily EODHD budget, attempt guards, and coverage survive for the next retry.
+        if: always() && github.event_name != 'push' && inputs.dry_run != true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -116,6 +112,8 @@ jobs:
           fi
 
       - name: Run offline engine and opening-review tests
+        # Run regardless of the report step outcome; a failure here must stay visible.
+        if: ${{ !cancelled() }}
         run: |
           python tests/test_engine.py
           python tests/test_opening_review.py

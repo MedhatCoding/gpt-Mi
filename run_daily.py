@@ -10,6 +10,16 @@ from src.live_quotes import fetch_live_quotes, compare_snapshot, validate_quote_
 from src.telegram import send_message
 
 
+def _parse_window(window, default_start, default_end):
+    """يقرأ نافذة زمنية بصيغة ["HH:MM", "HH:MM"] من الإعدادات مع قيمة احتياطية صالحة."""
+    try:
+        start_s, end_s = list(window or [default_start, default_end])[:2]
+        (sh, sm), (eh, em) = (tuple(int(p) for p in str(x).split(":")) for x in (start_s, end_s))
+        return time(sh, sm), time(eh, em)
+    except Exception:
+        return time.fromisoformat(default_start), time.fromisoformat(default_end)
+
+
 def opening_review(cfg, now):
     state = C.load_state()
     day = now.date().isoformat()
@@ -109,18 +119,24 @@ def main():
             result = {"status": "skipped", "detail": "إجازة سوق"}
         else:
             local = now.timetz().replace(tzinfo=None)
-            if not args.force and not (time(10, 50) <= local <= time(11, 20)):
-                result = {"status": "skipped", "detail": "خارج نافذة مراجعة 11 صباحًا بتوقيت القاهرة"}
+            rev_start, rev_end = _parse_window(cfg["market"].get("opening_review_window"), "10:50", "12:30")
+            if not args.force and not (rev_start <= local <= rev_end):
+                result = {"status": "skipped", "detail": f"خارج نافذة مراجعة ما بعد الافتتاح ({rev_start:%H:%M}–{rev_end:%H:%M} بتوقيت القاهرة)"}
             else:
                 result = opening_review(cfg, now)
     else:
         local = now.timetz().replace(tzinfo=None)
-        if not args.force and not args.dry_run and not (time(8, 50) <= local <= time(9, 20)):
-            result = {"status": "skipped", "detail": "التقرير التلقائي محدد 09:00 صباحًا بتوقيت القاهرة"}
+        win_start, win_end = _parse_window(cfg["market"].get("report_window"), "08:50", "12:30")
+        if not args.force and not args.dry_run and not (win_start <= local <= win_end):
+            result = {"status": "skipped", "detail": f"خارج نافذة تقرير الصباح ({win_start:%H:%M}–{win_end:%H:%M} بتوقيت القاهرة)"}
         else:
             result = pipeline.run(cfg=cfg, force=args.force, dry_run=args.dry_run, offline=args.offline, now=now)
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-    return 1 if result.get("status") == "not_sent" else 0
+    # "not_sent" نتيجة متوقعة (بيانات أو أسرار ناقصة) وليست فشل تشغيل؛ الأخطاء
+    # الحقيقية بتترفع كاستثناءات وتخرج بكود غير صفري تلقائيًا. نعيد 0 عشان خطوات
+    # الالتزام والاختبار والنشر التالية تكمل في نفس التشغيل، وحراسات بايثون تمنع
+    # التكرار عند كل tick.
+    return 0
 
 
 if __name__ == "__main__":

@@ -949,6 +949,15 @@ def test_streamlit_app_smoke_run():
     """تشغيل صفحة Streamlit كاملة ببيانات اختبار وهمية لاكتشاف أخطاء منطق الواجهة."""
     _reset_outputs()
     _run(dry_run=True)
+    # بوابة النشر في الواجهة تقارن تاريخ بيانات التقرير بآخر جلسة EGX متوقعة
+    # وفق الساعة الحقيقية، وبيانات الاختبار تاريخها ثابت (2026-09-17). نوحّد
+    # data_date مع الجلسة المتوقعة قبل تشغيل الصفحة لاختبار مسار العرض الطبيعي
+    # (بيانات حديثة) بدون أي تعديل على كود الإنتاج أو أي خطافات خاصة بالاختبار.
+    expected = pipeline.expected_last_session(datetime.now(CAIRO), CFG)
+    signals_path = C.SIGNALS / "latest.json"
+    payload = json.loads(signals_path.read_text(encoding="utf-8"))
+    payload["data_date"] = expected.isoformat()
+    signals_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     _run_app()
 
 
