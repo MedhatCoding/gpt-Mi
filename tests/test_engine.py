@@ -905,7 +905,12 @@ def _run_app():
     for m in [k for k in sys.modules if k in ("app.charts", "app.ui", "app.streamlit_app")]:
         del sys.modules[m]
     try:
-        runpy.run_path(str(ROOT / "app" / "streamlit_app.py"), run_name="__main__")
+        try:
+            runpy.run_path(str(ROOT / "app" / "streamlit_app.py"), run_name="__main__")
+        except StopApp:
+            # st.stop() is the expected Streamlit control-flow exit when the
+            # stale-report safety gate blocks the page during this smoke test.
+            pass
     finally:
         for k, v in saved.items():
             if v is None:
