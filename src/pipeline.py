@@ -341,6 +341,25 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
                     f"(منذ {review_age} يومًا). الأسهم تظل في التحليل لكن يلزم إعادة التحقق من المصدر الشرعي قبل الاعتماد عليها."
                 )
 
+    # Never replace the last published report with a stale snapshot. The previous
+    # implementation correctly blocked Telegram/BUY labels, but wrote latest.json
+    # before checking the final send status; GitHub Actions could then publish that
+    # stale file to Pages. Stop before mutating report/history outputs.
+    if data_d < exp:
+        detail = (
+            f"توقف آمن: آخر جلسة في البيانات {data_d} أقدم من الجلسة المتوقعة {exp}. "
+            "تم الاحتفاظ بآخر تقرير منشور دون استبداله ببيانات قديمة."
+        )
+        print(f"  [PUBLISH GUARD] {detail}")
+        return {
+            "status": "stale_data",
+            "detail": detail,
+            "data_date": result["data_date"],
+            "expected_session": exp.isoformat(),
+            "buys": [],
+            "warnings": warnings,
+        }
+
     # ---- سجل التوصيات
     hist = load_history()
     hist = update_history(hist, prices, cfg)
