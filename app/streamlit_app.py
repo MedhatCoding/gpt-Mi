@@ -103,6 +103,25 @@ def load_csv(p: Path, index_col: str | None = None):
 cfg = C.load_config()
 latest = load_json(C.SIGNALS / "latest.json")
 
+# Hard publication gate: never display recommendations whose market data
+# predates the latest expected EGX session. A new generated_at alone is not enough.
+def _expected_latest_egx_session(now, market_cfg):
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    local_now = now.astimezone(ZoneInfo(market_cfg.get("timezone", "Africa/Cairo")))
+    weekdays = set(market_cfg.get("trading_weekdays", [6, 0, 1, 2, 3]))
+    holidays = C.load_holidays()
+    day = local_now.date()
+    if not (local_now.hour >= int(market_cfg.get("session_close_hour", 14))
+            and day.weekday() in weekdays and day not in holidays):
+        day -= timedelta(days=1)
+    for _ in range(32):
+        if day.weekday() in weekdays and day not in holidays:
+            return day
+        day -= timedelta(days=1)
+    return day
+
 if not latest:
     st.markdown(
         '<div class="topbar"><div class="topbar-in"><div><span class="brand-name">GPT-Mi</span>'
@@ -111,6 +130,29 @@ if not latest:
         'من تبويب Actions في GitHub اختر «EGX Daily Report» ثم Run workflow، أو محليًا: '
         '<bdi>python run_daily.py --force --dry-run</bdi></div>',
         unsafe_allow_html=True,
+    )
+    st.stop()
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+market_cfg = cfg.get("market", {})
+now_cairo = datetime.now(ZoneInfo(market_cfg.get("timezone", "Africa/Cairo")))
+expected_data_date = _expected_latest_egx_session(now_cairo, market_cfg)
+try:
+    published_data_date = pd.Timestamp(str(latest.get("data_date", ""))).date()
+except Exception:
+    published_data_date = None
+
+if published_data_date is None or published_data_date < expected_data_date:
+    shown_date = published_data_date.isoformat() if published_data_date else "غير متاح"
+    st.error(
+        "تم إيقاف عرض التوصيات لحمايتك: بيانات التقرير قديمة أو تاريخها غير صالح. "
+        f"تاريخ البيانات المنشورة: {shown_date} — آخر جلسة متوقعة: {expected_data_date.isoformat()}."
+    )
+    st.warning(
+        "لن تظهر فرص الشراء أو أسعار الدخول ووقف الخسارة حتى ينجح تحديث بيانات السوق "
+        "وإنتاج تقرير موثوق. نجاح الاختبارات وحده لا يكفي."
     )
     st.stop()
 
