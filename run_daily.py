@@ -2,7 +2,7 @@
 """Daily report and opening-hour review runner."""
 import argparse
 import json
-from datetime import datetime, time
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from src import config as C, pipeline
@@ -28,6 +28,20 @@ def opening_review(cfg, now):
             return {"status": "not_sent", "detail": "تقرير التوصيات ليس تقرير اليوم أو تجاوز عمره 180 دقيقة"}
     except Exception:
         return {"status": "not_sent", "detail": "تعذر التحقق من تاريخ التقرير"}
+
+    # A fresh generated_at can hide stale cached candles. Require the latest
+    # expected EGX session before sending any opening-hour review.
+    try:
+        data_date = date.fromisoformat(str(report.get("data_date", "")))
+        expected_session = pipeline.expected_last_session(now, cfg)
+        if data_date < expected_session:
+            return {
+                "status": "not_sent",
+                "detail": f"بيانات التقرير قديمة: آخر جلسة {data_date}، والمتوقع توفرها {expected_session}؛ أُوقفت المراجعة.",
+            }
+    except Exception:
+        return {"status": "not_sent", "detail": "تاريخ بيانات السوق مفقود أو غير صالح"}
+
     picks = [p for p in report.get("picks", []) if p.get("signal") == "BUY"][:20]
     if not picks:
         state["last_opening_review_date"] = day
@@ -39,7 +53,14 @@ def opening_review(cfg, now):
     freshness = validate_quote_freshness(snapshot, now=now, max_age_minutes=30)
     if not freshness.get("ok"):
         return {"status": "not_sent", "detail": freshness.get("error", "تعذر التحقق من حداثة الأسعار")}
-    quotes = {q.get("code"): q for q in snapshot.get("quotes", [])}
+    quotes = {str(q.get("code", "")).upper(): q for q in snapshot.get("quotes", [])}
+    requested_codes = {str(p.get("code", "")).upper() for p in picks}
+    missing_codes = sorted(requested_codes - set(quotes))
+    if missing_codes:
+        return {
+            "status": "not_sent",
+            "detail": "لم تصل أسعار لحظية لكل الأسهم المختارة؛ لم تُرسل مراجعة ناقصة: " + ", ".join(missing_codes),
+        }
     lines = [
         "🔎 <b>مراجعة GPT-Mi بعد ساعة من الافتتاح</b>",
         f"بيانات التقرير: {report.get('data_date')}",
@@ -49,10 +70,7 @@ def opening_review(cfg, now):
     ]
     for pick in picks:
         code = str(pick.get("code", "")).upper()
-        q = quotes.get(code)
-        if not q:
-            lines.append(f"• <b>{code}</b>: السعر غير متاح؛ التوصية غير متحقق منها.")
-            continue
+        q = quotes[code]
         result = compare_snapshot(pick, q)
         lines.append(
             f"• <b>{code} — {pick.get('name', code)}</b>\n"
