@@ -934,6 +934,24 @@ if active_section == section_labels[2] and more_section == more_labels[3]:
                     ]),
                     unsafe_allow_html=True,
                 )
+    # تفسير قرارات النموذج: أعلى المؤشرات أثرًا في قدرة الترتيب (AUC) من آخر تدريب.
+    fi_path = C.BACKTEST / "feature_importance.csv"
+    if fi_path.exists():
+        fi = load_csv(fi_path)
+        if fi is not None and len(fi) and {"date", "feature", "auc_drop"} <= set(fi.columns):
+            fi["auc_drop"] = pd.to_numeric(fi["auc_drop"], errors="coerce")
+            last_fi_date = str(fi["date"].iloc[-1])
+            day_fi = fi[fi["date"] == last_fi_date].sort_values("auc_drop", ascending=False)
+            day_fi = day_fi[day_fi["auc_drop"] > 0]
+            if len(day_fi):
+                st.markdown(
+                    ui.section(
+                        "أهم المؤثرات في قرارات النموذج",
+                        f"أثر إخفاء كل مؤشر على AUC في آخر تدريب ({last_fi_date}) — تفسير تقريبي للعرض وليس سببًا رقميًا للقرار.",
+                    ),
+                    unsafe_allow_html=True,
+                )
+                st.bar_chart(day_fi.set_index("feature")["auc_drop"], height=260)
     cov = load_csv(C.SIGNALS / "coverage.csv")
     if cov is not None:
         # Backward-compatible with older committed coverage.csv files that only

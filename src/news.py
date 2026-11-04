@@ -85,8 +85,110 @@ def score_headline(title: str) -> int:
     return sum(1 for w in POSITIVE_TERMS if w in t) - sum(1 for w in NEGATIVE_TERMS if w in t)
 
 
-def sentiment_summary(news: dict) -> dict:
-    """متوسط درجات العناوين للسوق ولكل سهم من المختارات."""
+# ------------------------------------------------------------------ مشاعر عبر النموذج اللغوي
+# ترقية اختيارية فوق القاموس: نفس مزود تعليقات التقرير ونفس المفاتيح، بمهمة تصنيف
+# مخصصة. أي فشل يعود تلقائيًا للتصنيف المعجمي فلا يتوقف التقرير أبدًا.
+SENTIMENT_SYSTEM_PROMPT = (
+    "أنت محلل أخبار مالي مصري. مهمتك تصنيف مشاعر عناوين الأخبار فقط. ستستلم JSON فيه عناوين مرقمة: "
+    "M1..Mn لأخبار السوق وC1..Cn لأخبار الشركات.\n"
+    "القواعد:\n"
+    "1) صنّف كل عنوان بدرجة من -2 إلى +2: موجب قوي 2، موجب 1، محايد 0، سالب -1، سالب قوي -2.\n"
+    "2) صنّف نص العنوان المكتوب فقط؛ لا تخترع أحداثًا أو معلومات غير مذكورة فيه.\n"
+    "3) العنوان المزدوج أو غير الواضح درجته 0.\n"
+    "4) أرجع JSON فقط بهذا الشكل بالضبط: "
+    '{"market": {"M1": 0}, "companies": {"C1": 0}}'
+)
+
+
+def _sentiment_payload(news: dict, max_headlines: int = 12) -> dict:
+    market = [
+        {"id": f"M{i + 1}", "title": x.get("title", "")}
+        for i, x in enumerate((news.get("market") or [])[:max_headlines])
+    ]
+    companies = [
+        {"id": f"C{i + 1}", "code": x.get("code"), "title": x.get("title", "")}
+        for i, x in enumerate((news.get("companies") or [])[:max_headlines])
+    ]
+    return {"market_headlines": market, "company_headlines": companies}
+
+
+def parse_llm_scores(data: dict, payload: dict) -> dict | None:
+    """يحوّل رد النموذج لدرجات موثقة؛ يرجع None لو أقل من نصف العناوين قابلة للقراءة."""
+    def _score(v) -> int | None:
+        try:
+            s = int(round(float(v)))
+        except Exception:
+            return None
+        return s if -2 <= s <= 2 else None
+
+    raw = data.get("scores") if isinstance(data.get("scores"), dict) else data
+    if not isinstance(raw, dict):
+        return None
+    m_raw = raw.get("market") if isinstance(raw.get("market"), dict) else {}
+    c_raw = raw.get("companies") if isinstance(raw.get("companies"), dict) else {}
+    market_scores: dict[str, int] = {}
+    company_scores: dict[str, int] = {}
+    for item in payload.get("market_headlines") or []:
+        s = _score(m_raw.get(item["id"]))
+        if s is not None:
+            market_scores[item["id"]] = s
+    for item in payload.get("company_headlines") or []:
+        s = _score(c_raw.get(item["id"]))
+        if s is not None:
+            company_scores[item["id"]] = s
+    total = len(payload.get("market_headlines") or []) + len(payload.get("company_headlines") or [])
+    if not total or len(market_scores) + len(company_scores) < max(1, total // 2):
+        return None
+    return {"market": market_scores, "companies": company_scores}
+
+
+def llm_sentiment_summary(news: dict, cfg: dict) -> dict | None:
+    """مشاعر العناوين عبر النموذج اللغوي المضبوط في llm.provider.
+
+    أي فشل (مفتاح غايب، انقطاع، رد غير قابل للقراءة) يرجع None؛ المستدعي يرجع للقاموس.
+    """
+    try:
+        scfg = ((cfg or {}).get("llm") or {}).get("news_sentiment") or {}
+        if not scfg.get("enabled", True):
+            return None
+        from .report import call_llm  # استيراد محلي عمدًا: يمنع أي دورة استيراد مستقبلية
+        payload = _sentiment_payload(news, max_headlines=int(scfg.get("max_headlines", 12)))
+        if not payload["market_headlines"] and not payload["company_headlines"]:
+            return None
+        data, meta = call_llm(payload, cfg, system=SENTIMENT_SYSTEM_PROMPT)
+        if not meta.get("ok") or not isinstance(data, dict):
+            return None
+        scores = parse_llm_scores(data, payload)
+        if scores is None:
+            return None
+        market_vals = [scores["market"][item["id"]] for item in payload["market_headlines"] if item["id"] in scores["market"]]
+        per_code: dict[str, list[int]] = {}
+        for item in payload["company_headlines"]:
+            code = str(item.get("code") or "").upper()
+            s = scores["companies"].get(item["id"])
+            if code and s is not None:
+                per_code.setdefault(code, []).append(s)
+        return {
+            "method": "llm",
+            "model": meta.get("model"),
+            "market": round(sum(market_vals) / len(market_vals), 2) if market_vals else None,
+            "companies": {c: round(sum(v) / len(v), 2) for c, v in per_code.items()},
+            "note": "مشاعر مقدرة بنموذج لغوي للعناوين فقط؛ تقدير عرضي لا يدخل في أي قرار رقمي ولا في نموذج التداول.",
+        }
+    except Exception:
+        return None
+
+
+def sentiment_summary(news: dict, cfg: dict | None = None) -> dict:
+    """متوسط درجات العناوين للسوق ولكل سهم من المختارات.
+
+    لو مررنا الإعدادات: تجربة النموذج اللغوي أولًا، والرجوع للقاموس عند أي فشل.
+    """
+    if cfg is not None:
+        llm = llm_sentiment_summary(news, cfg)
+        if llm is not None:
+            return llm
+
     def avg(items: list[dict]):
         scores = [score_headline(x.get("title", "")) for x in items]
         return round(sum(scores) / len(scores), 2) if scores else None

@@ -1325,3 +1325,233 @@ def test_ml_overlay_backtest_filters_technical_trades():
     frames = {}
     for i in range(12):
         df = make_prices(500 + i, drift=0.0012 if i % 3 else 0.0004, vol=0.018)
+        f = compute_scores(compute_indicators(df), None, None, CFG)
+        f["regime_ok"] = True
+        frames[f"M{i:02d}"] = f
+    cfg = {**CFG, "ml": {**CFG["ml"], "min_samples": 200, "mlp_max_iter": 40, "rf_trees": 40,
+                         "backtest": {"enabled": True, "window_days": 25, "max_windows": 3,
+                                      "prob_min": 0.50, "min_train_days": 150}}}
+    summary = run_ml_overlay_backtest(frames, cfg)
+    assert summary["enabled"] is True
+    assert summary.get("windows", 0) >= 2
+    assert "technical" in summary and "ml_filtered" in summary
+    assert summary["technical"].get("trades", 0) >= summary["ml_filtered"].get("trades", 0)
+    # الفلتر ما يزيلش صفقات مش موجودة أصلًا في التقني
+    assert isinstance(ml_overlay_warning(summary), (str, type(None)))
+
+
+def test_ml_platt_calibration_is_monotonic():
+    from src.ml_model import _fit_platt
+
+    rng = np.random.default_rng(11)
+    p = rng.uniform(0.05, 0.95, 400)
+    y = (rng.uniform(0, 1, 400) < p).astype(int)
+    cal = _fit_platt(p, y)
+    assert cal is not None
+    grid = np.linspace(0.01, 0.99, 50).reshape(-1, 1)
+    out = cal.predict_proba(grid)[:, 1]
+    assert np.all(np.diff(out) >= -1e-12)          # رتيبة تصاعديًا
+    assert (out >= 0).all() and (out <= 1).all()   # احتمالات صالحة
+    from sklearn.metrics import brier_score_loss
+
+    b_raw = brier_score_loss(y, p)
+    b_cal = brier_score_loss(y, cal.predict_proba(p.reshape(-1, 1))[:, 1])
+    assert b_cal <= b_raw + 1e-9                  # المعايرة ما تفسدش الجودة على نفس العينة
+    assert _fit_platt([0.2] * 5, [0] * 5) is None  # فئة واحدة: لا معايرة
+
+
+def test_liquidity_slippage_penalizes_thin_names():
+    from src.backtest import _add_extra_friction, liquidity_slippage_pct
+
+    trades = pd.DataFrame([
+        {"code": "LIQ", "entry": 100.0, "risk": 10.0, "r_net": 1.0, "ret_pct": 10.0, "days": 5,
+         "reason": "target", "exit_date": "2026-09-10", "value_sma20": 50_000_000.0},
+        {"code": "THIN", "entry": 5.0, "risk": 0.5, "r_net": 1.0, "ret_pct": 10.0, "days": 5,
+         "reason": "target", "exit_date": "2026-09-10", "value_sma20": 200_000.0},
+    ])
+    cfg = {"backtest": {"liquidity_slippage": {
+        "enabled": True, "order_value_egp": 100_000, "coefficient": 0.005, "cap_pct": 1.0}}}
+    slip = liquidity_slippage_pct(trades, cfg)
+    assert 0.0 <= slip.iloc[0] < slip.iloc[1] <= 1.0 + 1e-9   # السهم الرقيق ينزلق أكثر
+    disabled = {"backtest": {"liquidity_slippage": {"enabled": False}}}
+    assert float(liquidity_slippage_pct(trades, disabled).sum()) == 0.0
+    stressed = _add_extra_friction(trades, slip)
+    assert (stressed["ret_pct"] < trades["ret_pct"]).all()    # الاحتكاك يقلل الصافي
+    assert (trades["ret_pct"] - stressed["ret_pct"]).iloc[1] > (trades["ret_pct"] - stressed["ret_pct"]).iloc[0]
+
+
+def test_ml_metrics_drift_warning_fires_on_decline():
+    path = C.BACKTEST / "ml_metrics.csv"
+    existed = path.exists()
+    backup = path.read_bytes() if existed else None
+    try:
+        days = pd.date_range("2026-10-01", periods=13).strftime("%Y-%m-%d")
+        declining = pd.DataFrame([
+            {"date": d, "samples": 900, "auc": 0.58 if i < 10 else 0.51, "brier": 0.12,
+             "baseline_brier": 0.15, "calibrated_brier": 0.11, "calibration_applied": True, "model_used": True}
+            for i, d in enumerate(days)
+        ])
+        declining.to_csv(path, index=False)
+        warn = pipeline._ml_drift_warning(datetime(2026, 10, 14, 9, 0, tzinfo=CAIRO))
+        assert warn and "انحراف" in warn
+        # أداء مستقر: لا تحذير
+        stable = declining.head(10)
+        stable.to_csv(path, index=False)
+        assert pipeline._ml_drift_warning(datetime(2026, 10, 11, 9, 0, tzinfo=CAIRO)) is None
+        # نموذج مرفوض من البوابات 3 أيام متتالية: تحذير
+        gates = pd.DataFrame([
+            {"date": d, "samples": 900, "auc": None, "brier": None, "baseline_brier": None,
+             "calibrated_brier": None, "calibration_applied": False, "model_used": False}
+            for d in days[:3]
+        ])
+        gates.to_csv(path, index=False)
+        warn2 = pipeline._ml_drift_warning(datetime(2026, 10, 4, 9, 0, tzinfo=CAIRO))
+        assert warn2 and "البوابات" in warn2
+    finally:
+        if existed:
+            path.write_bytes(backup)
+        else:
+            path.unlink(missing_ok=True)
+
+
+def test_news_sentiment_lexicon_scores_headlines():
+    from src.news import score_headline, sentiment_summary
+
+    assert score_headline("ارتفاع قياسي في أرباح الشركة") > 0
+    assert score_headline("تراجع وتأجيل طرح الأسهم") < 0
+    assert score_headline("اجتماع الجمعية العامة") == 0
+    news = {
+        "market": [{"title": "نمو قياسي"}, {"title": "هبوط حاد"}],
+        "companies": [{"code": "A", "title": "أرباح مرتفعة"}, {"code": "A", "title": "أرباح مستقرة"}],
+    }
+    s = sentiment_summary(news)
+    assert s["market"] == 0.5
+    assert s["companies"]["A"] == 1.0
+    assert s["method"] == "lexicon" and s["note"]
+
+
+def test_llm_sentiment_falls_back_to_lexicon_without_key():
+    from src.news import sentiment_summary
+
+    news = {
+        "market": [{"title": "نمو قياسي"}, {"title": "هبوط حاد"}],
+        "companies": [{"code": "A", "title": "أرباح مرتفعة"}, {"code": "A", "title": "أرباح مستقرة"}],
+    }
+    cfg = {"llm": {"provider": "gemini", "gemini_model": "gemini-2.5-flash", "max_tokens": 2000, "timeout": 5,
+                   "news_sentiment": {"enabled": True, "max_headlines": 12}}}
+    saved = {k: os.environ.pop(k, None) for k in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY")}
+    try:
+        s = sentiment_summary(news, cfg)
+        # المفتاح غايب: رجوع تلقائي للقاموس بدون أي فشل أو طلب شبكة
+        assert s["method"] == "lexicon" and s["market"] == 0.5
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_llm_sentiment_parses_model_scores():
+    import src.news as news_mod
+    from src.news import sentiment_summary
+
+    news = {
+        "market": [{"title": "نمو قياسي"}, {"title": "هبوط حاد"}],
+        "companies": [{"code": "A", "title": "أرباح مرتفعة"}, {"code": "B", "title": "غرامة وتأجيل"}],
+    }
+    cfg = {"llm": {"provider": "gemini", "news_sentiment": {"enabled": True, "max_headlines": 12}}}
+    fake_reply = {"market": {"M1": 2, "M2": -1}, "companies": {"C1": 1, "C2": -2}}
+    payload = news_mod._sentiment_payload(news)
+    scores = news_mod.parse_llm_scores(fake_reply, payload)
+    assert scores is not None
+    assert scores["market"]["M1"] == 2 and scores["market"]["M2"] == -1
+    assert scores["companies"]["C1"] == 1 and scores["companies"]["C2"] == -2
+    # درجات خارج النطاق أو رد شبه فاضي يُرفض كله (بدل تقدير مضلل)
+    assert news_mod.parse_llm_scores({"market": {}, "companies": {}}, payload) is None
+    assert news_mod.parse_llm_scores({"market": {"M1": 9}, "companies": {"C1": 1}}, payload) is None
+
+    # ربط المسار: لو النموذج اللغوي رجّع درجات معقولة تستخدم مع method=llm
+    def fake_summary(n, c):
+        return {"method": "llm", "model": "fake", "market": 0.5, "companies": {"A": 1.0, "B": -2.0}, "note": "اختبار"}
+
+    orig = news_mod.llm_sentiment_summary
+    news_mod.llm_sentiment_summary = fake_summary
+    try:
+        s = sentiment_summary(news, cfg)
+        assert s["method"] == "llm" and s["model"] == "fake"
+        assert s["market"] == 0.5 and s["companies"]["B"] == -2.0
+    finally:
+        news_mod.llm_sentiment_summary = orig
+
+
+def test_deep_model_gate_delays_until_two_years():
+    from src.ml_model import _deep_model_status
+
+    mcfg = {"deep_model": {"enabled": True, "min_history_days": 730}}
+    short = _deep_model_status(400, mcfg)
+    assert not short["eligible"] and "مؤجل" in short["reason"]
+    long = _deep_model_status(800, mcfg)
+    assert long["eligible"] is True
+    # في CI بدون TensorFlow يتأجل بأمان مع سبب واضح؛ وعلى جهاز فيه TensorFlow يبقى متاحًا
+    assert long["available"] is True or "TensorFlow" in long["reason"]
+    off = _deep_model_status(800, {"deep_model": {"enabled": False}})
+    assert not off["eligible"] and "معطل" in off["reason"]
+
+
+def test_permutation_importance_ranks_true_driver_top():
+    from src.ml_model import permutation_importance
+
+    rng = np.random.default_rng(7)
+    n = 300
+    X = pd.DataFrame({"driver": rng.normal(size=n), "noise": rng.normal(size=n)})
+    y = (X["driver"].to_numpy() + 0.5 * rng.normal(size=n) > 0).astype(int)
+    ranked = permutation_importance(X, y, lambda D: D["driver"].to_numpy(), n_repeats=3)
+    # النموذج بيعتمد على driver بس: إخفاؤه يهدم AUC، والضوضاء أثرها صفر
+    assert ranked[0]["feature"] == "driver" and ranked[0]["auc_drop"] > 0.05
+    noise = [r for r in ranked if r["feature"] == "noise"][0]
+    assert abs(noise["auc_drop"]) < 0.05
+
+
+def test_feature_importance_logged_to_csv():
+    metrics_path = C.BACKTEST / "ml_metrics.csv"
+    imp_path = C.BACKTEST / "feature_importance.csv"
+    m_existed, i_existed = metrics_path.exists(), imp_path.exists()
+    m_backup = metrics_path.read_bytes() if m_existed else None
+    i_backup = imp_path.read_bytes() if i_existed else None
+    try:
+        meta = {
+            "enabled": True, "samples": 900, "auc": 0.6, "brier": 0.1, "baseline_brier": 0.15,
+            "calibration": {"applied": True, "oof_brier_calibrated": 0.09}, "model_used": True,
+            "feature_importance": [{"feature": "ret120", "auc_drop": 0.02}, {"feature": "rsi14", "auc_drop": 0.01}],
+        }
+        pipeline._log_ml_metrics(meta, datetime(2026, 11, 4, 9, 0, tzinfo=CAIRO))
+        logged = pd.read_csv(imp_path)
+        assert list(logged["feature"]) == ["ret120", "rsi14"]
+        assert list(logged["date"]) == ["2026-11-04", "2026-11-04"]
+    finally:
+        if m_existed:
+            metrics_path.write_bytes(m_backup)
+        else:
+            metrics_path.unlink(missing_ok=True)
+        if i_existed:
+            imp_path.write_bytes(i_backup)
+        else:
+            imp_path.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"  ok   {name}")
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            import traceback
+
+            print(f"  FAIL {name}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    shutil.rmtree(TMP, ignore_errors=True)
+    sys.exit(1 if failed else 0)
+

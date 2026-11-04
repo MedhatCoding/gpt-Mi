@@ -92,6 +92,24 @@ ml:
   rf_depth: 6
   # معايرة احتمالات Platt: تحويل درجات المصنف إلى احتمال معاير على توقعات خارج العينة.
   calibration_enabled: true
+  # تفسير قرارات النموذج: أثر إخفاء كل مؤشر على AUC (permutation importance) على عينات التحقق.
+  importance:
+    enabled: true
+    n_repeats: 2
+    top_n: 8
+  # نموذج عميق اختياري (LSTM + attention): يشتغل تلقائيًا لما التاريخ يبقى سنتين فأكثر
+  # وTensorFlow مثبت (requirements-deep.txt). متعمد إنه ما يشتغلش في CI اليومي عشان يفضل سريعًا؛
+  # وعلى أي جهاز فيه TensorFlow بيتقاس أثره على العينة الخارجية أولًا ولا يُدمج إلا لو حسّن AUC.
+  deep_model:
+    enabled: true
+    min_history_days: 730
+    sequence_days: 20
+    units: 24
+    epochs: 8
+    blend_weight: 0.20
+    min_train_rows: 1000
+    max_train_rows: 40000
+    min_oof_rows: 200
   # اختبار تاريخي walk-forward لطبقة النموذج فوق الإشارات التقنية (تشغيل أسبوعي مع الاختبار التاريخي).
   backtest:
     enabled: true
@@ -107,6 +125,10 @@ llm:
   gemini_model: "gemini-2.5-flash"
   max_tokens: 2000
   timeout: 90
+  # مشاعر الأخبار عبر النموذج اللغوي نفسه بدل القاموس؛ fallback تلقائي للقاموس لو المفتاح غايب أو أي فشل.
+  news_sentiment:
+    enabled: true
+    max_headlines: 12
 telegram:
   enabled: true
   max_picks: 5
@@ -124,3 +146,5 @@ portfolio:
 # build: portfolio-store-fix-2026-10-09-2
 
 # build: eodhd-bulk-single-request + source-freshness-monitoring 2026-11-04
+
+# build: llm-news-sentiment + deep-model-gate + permutation-importance 2026-11-04

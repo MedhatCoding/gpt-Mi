@@ -91,6 +91,12 @@ def _log_ml_metrics(meta: dict, now: datetime) -> None:
         path = C.BACKTEST / "ml_metrics.csv"
         path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame([row]).to_csv(path, mode="a", header=not path.exists(), index=False)
+        # تفسير قرارات النموذج: أعلى المؤشرات أثرًا في AUC (تُعرض في لوحة المتابعة).
+        imp = [r for r in (meta.get("feature_importance") or []) if isinstance(r, dict) and r.get("feature")]
+        if imp:
+            ipath = C.BACKTEST / "feature_importance.csv"
+            irows = [{"date": now.date().isoformat(), "feature": str(r["feature"]), "auc_drop": r.get("auc_drop")} for r in imp]
+            pd.DataFrame(irows).to_csv(ipath, mode="a", header=not ipath.exists(), index=False)
     except Exception as e:  # noqa: BLE001
         print(f"  [ML] تعذر تسجيل مقاييس النموذج: {type(e).__name__}")
 
@@ -284,6 +290,9 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     frames, regime_df, _panel = analyze(prices, bench, cfg, eligible_ml_codes=ml_eligible_codes)
     # مراقبة انحراف النموذج: سجل يومي لمقاييس التدريب (drift monitoring).
     _log_ml_metrics(regime_df.attrs.get("ml_meta", {}), now)
+    deep_status = (regime_df.attrs.get("ml_meta", {}) or {}).get("deep_model") or {}
+    if deep_status.get("reason"):
+        print(f"  [ML-DEEP] {deep_status['reason']}")
     latest = latest_table(frames, names, cfg, regime_df.attrs.get("ml_probs", {}), regime_df.attrs.get("ml_meta", {}))
     # Sharia eligibility is a hard gate for BUY labels, not merely a ranking feature.
     # Unverified candidates remain visible in WATCH with an explicit review reason.
@@ -330,9 +339,10 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     except Exception as e:
         print(f"  [NEWS] تعذر جلب الأخبار: {type(e).__name__}")
         result["news"] = {"market": [], "companies": [], "error": type(e).__name__}
-    # ملخص مشاعر العناوين (معجمي مبسط): عرضي فقط ولا يدخل في أي قرار رقمي.
+    # ملخص مشاعر العناوين: نموذج لغوي لو متاح (نفس مزود تعليقات التقرير)، وإلا القاموس.
+    # عرضي فقط ولا يدخل في أي قرار رقمي.
     try:
-        result["news"]["sentiment"] = sentiment_summary(result["news"])
+        result["news"]["sentiment"] = sentiment_summary(result["news"], cfg)
         comp_sent = (result["news"]["sentiment"].get("companies") or {})
         for p in result.get("picks", []):
             s = comp_sent.get(str(p.get("code", "")).upper())

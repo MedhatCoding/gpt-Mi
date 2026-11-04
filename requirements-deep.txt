@@ -1,0 +1,6 @@
+# اختياري تمامًا: يفعّل طبقة النموذج العميق (LSTM + attention) المضبوطة في ml.deep_model.
+# متعمد إنه مش في requirements-job.txt ولا requirements.txt: CI اليومي والوحة يفضلان خفيفين وسريعين،
+# والطبقة العميقة بتتأجل بأمان لما TensorFlow مش موجود (بتظهر رسالة [ML-DEEP] في سجل التشغيل).
+# ثبّته يدويًا (pip install -r requirements-deep.txt) لو عايز الطبقة العميقة على جهازك،
+# ومتحركش غير لما التاريخ المتاح يبقى سنتين فأكثر (ml.deep_model.min_history_days).
+tensorflow>=2.16

@@ -169,8 +169,12 @@ def _extract_json(text: str) -> dict | None:
     except Exception:
         return None
 
-def call_llm(payload: dict, cfg: dict, post=requests.post, env=os.environ) -> tuple[dict | None, dict]:
-    """يرجع (تعليقات أو None، معلومات عن التشغيلة). أي فشل = None والتقرير يكمل بالنص الجاهز."""
+def call_llm(payload: dict, cfg: dict, post=requests.post, env=os.environ, system: str | None = None) -> tuple[dict | None, dict]:
+    """يرجع (تعليقات أو None، معلومات عن التشغيلة). أي فشل = None والتقرير يكمل بالنص الجاهز.
+
+    `system` يسمح بمهمة مختلفة (مثل تصنيف مشاعر العناوين) بنفس المزود والمفاتيح؛
+    الافتراضي هو مطبع التعليقات اليومي.
+    """
     l = cfg["llm"]
     provider = (l.get("provider") or "none").lower()
     meta = {"provider": provider, "ok": False, "error": ""}
@@ -178,6 +182,7 @@ def call_llm(payload: dict, cfg: dict, post=requests.post, env=os.environ) -> tu
         meta["error"] = "معطّل من الإعدادات"
         return None, meta
     user = json.dumps(payload, ensure_ascii=False)
+    sys_prompt = system or SYSTEM_PROMPT
     try:
         if provider == "anthropic":
             key = env.get("ANTHROPIC_API_KEY", "")
@@ -188,7 +193,7 @@ def call_llm(payload: dict, cfg: dict, post=requests.post, env=os.environ) -> tu
             r = post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": l["anthropic_model"], "max_tokens": l["max_tokens"], "system": SYSTEM_PROMPT,
+                json={"model": l["anthropic_model"], "max_tokens": l["max_tokens"], "system": sys_prompt,
                       "messages": [{"role": "user", "content": user}]},
                 timeout=l["timeout"],
             )
@@ -205,7 +210,7 @@ def call_llm(payload: dict, cfg: dict, post=requests.post, env=os.environ) -> tu
             r = post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{l['gemini_model']}:generateContent",
                 params={"key": key},
-                json={"systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                json={"systemInstruction": {"parts": [{"text": sys_prompt}]},
                       "contents": [{"role": "user", "parts": [{"text": user}]}],
                       "generationConfig": {"maxOutputTokens": max(int(l["max_tokens"]), 3000), "responseMimeType": "application/json"}},
                 timeout=l["timeout"],
