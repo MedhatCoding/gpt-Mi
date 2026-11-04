@@ -20,8 +20,9 @@ from .telegram import send_message
 from .funds import build_fund_overlay, _score
 from .track_record import load_history, log_signals, save_history, summarize, update_history
 from .universe import build_universe
-from .news import fetch_news
+from .news import fetch_news, sentiment_summary
 from .portfolio import evaluate, risk_summary
+from .ml_backtest import ml_overlay_warning, run_ml_overlay_backtest
 from .data_quality import apply_market_freshness_gate
 
 
@@ -68,6 +69,67 @@ def expected_last_session(now: datetime, cfg: dict) -> date:
             return d
         d -= timedelta(days=1)
     return d
+
+
+# ------------------------------------------------------------------ مراقبة النموذج
+def _log_ml_metrics(meta: dict, now: datetime) -> None:
+    """سجل يومي لمقاييس نموذج التعلم الآلي (دعم مراقبة الانحراف عبر الزمن)."""
+    try:
+        if not isinstance(meta, dict) or not meta.get("enabled", False):
+            return  # النموذج معطل أو لم يُدرَّب: لا نسجل صفوفًا مضللة
+        cal = meta.get("calibration") or {}
+        row = {
+            "date": now.date().isoformat(),
+            "samples": int(meta.get("samples") or 0),
+            "auc": meta.get("auc"),
+            "brier": meta.get("brier"),
+            "baseline_brier": meta.get("baseline_brier"),
+            "calibrated_brier": cal.get("oof_brier_calibrated"),
+            "calibration_applied": bool(cal.get("applied")),
+            "model_used": bool(meta.get("model_used")),
+        }
+        path = C.BACKTEST / "ml_metrics.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([row]).to_csv(path, mode="a", header=not path.exists(), index=False)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [ML] تعذر تسجيل مقاييس النموذج: {type(e).__name__}")
+
+
+def _ml_drift_warning(now: datetime, lookback: int = 10, recent: int = 3, margin: float = 0.03) -> str | None:
+    """تحذير لو أداء النموذج تراجع مؤخرًا أو لو رفضت البوابات النموذج أيامًا متتالية."""
+    try:
+        path = C.BACKTEST / "ml_metrics.csv"
+        if not path.exists():
+            return None
+        hist = pd.read_csv(path)
+        if hist.empty:
+            return None
+        if "model_used" in hist.columns:
+            used = hist["model_used"].astype(str).str.lower().isin(["true", "1"])
+            samples = pd.to_numeric(hist.get("samples"), errors="coerce").fillna(0)
+            gate_failed = (~used) & (samples > 0)
+            if len(gate_failed) >= recent and bool(gate_failed.iloc[-recent:].all()):
+                return (
+                    "نموذج التعلم الآلي لم يجتز بوابات الجودة في آخر "
+                    f"{recent} تدريبات متتالية (AUC/Brier تحت الحدود)؛ "
+                    "راجع مصادر البيانات وخصائص النموذج قبل الاعتماد على فلتر الاحتمال."
+                )
+        if "auc" not in hist.columns:
+            return None
+        aucs = pd.to_numeric(hist["auc"], errors="coerce").dropna()
+        if len(aucs) < recent + 3:
+            return None
+        prev = aucs.iloc[max(0, len(aucs) - lookback - recent): len(aucs) - recent]
+        recent_vals = aucs.iloc[-recent:]
+        if len(prev) >= 3 and float(recent_vals.mean()) < float(prev.mean()) - margin:
+            return (
+                "انحراف محتمل في نموذج التعلم الآلي: متوسط AUC في آخر "
+                f"{recent} تدريبات {float(recent_vals.mean()):.3f} مقابل "
+                f"{float(prev.mean()):.3f} للفترة السابقة؛ راجع الخصائص وإعادة التدريب."
+            )
+        return None
+    except Exception:
+        return None
 
 
 # ------------------------------------------------------------------
@@ -155,13 +217,17 @@ def save_outputs(result: dict, latest_cls: pd.DataFrame, regime_df: pd.DataFrame
     _write_json(C.SIGNALS / "latest.json", out)
 
 
-def maybe_backtest(cfg: dict, state: dict, frames: dict, now: datetime, force: bool = False) -> bool:
+def maybe_backtest(cfg: dict, state: dict, frames: dict, now: datetime, force: bool = False, eligible_codes: set[str] | None = None) -> bool:
     every = cfg["backtest"]["refresh_every_days"]
     last = state.get("last_backtest")
     due = force or not last or (now.date() - date.fromisoformat(last)).days >= every
     if not due:
         return False
     summary, strat, _base = run_backtest(frames, cfg)
+    try:
+        summary["ml_overlay"] = run_ml_overlay_backtest(frames, cfg, eligible_codes=eligible_codes)
+    except Exception as e:  # noqa: BLE001
+        summary["ml_overlay"] = {"enabled": True, "error": f"{type(e).__name__}: {e}"[:200]}
     summary["generated_at"] = now.isoformat(timespec="seconds")
     summary["stocks"] = len(frames)
     _write_json(C.BACKTEST / "summary.json", summary)
@@ -201,19 +267,23 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
         f"| وضع الدمج: {cfg['universe']['mode']})"
     )
 
-    # Refresh index caches first so Sharia analysis can use EGX33 as its benchmark.
+    # أولوية ميزانية EODHD: تحديث أسعار الأسهم نفسها قبل المؤشرات المرجعية
+    # حتى لا يستهلك EGX33/EGX30 الطلبات اليومية وتظل الأسهم ببيانات قديمة.
+    cov = refresh_all(cfg, codes, state, offline=offline)
+    source_freshness = summarize_source_freshness(cov)
+    prices = load_prices(codes, cfg, now)
+    # Refresh index caches so Sharia analysis can use EGX33 as its benchmark.
     market_indices = fetch_market_indices(cfg, state, offline=offline)
     bench = fetch_benchmark(cfg, state, offline=offline)
     live_market = fetch_oanor_market() if not offline else None
     funds = build_fund_overlay(bench, cfg, state=state)
-    cov = refresh_all(cfg, codes, state, offline=offline)
-    source_freshness = summarize_source_freshness(cov)
-    prices = load_prices(codes, cfg, now)
     if len(prices) < max(5, int(0.5 * len(codes))):
         raise DataError(f"بيانات غير كافية: {len(prices)} سهم فقط من {len(codes)} وصلت بيانات كافية (Yahoo/EODHD).")
 
     ml_eligible_codes = set(uni.loc[uni["sharia_verified"], "code"].astype(str))
     frames, regime_df, _panel = analyze(prices, bench, cfg, eligible_ml_codes=ml_eligible_codes)
+    # مراقبة انحراف النموذج: سجل يومي لمقاييس التدريب (drift monitoring).
+    _log_ml_metrics(regime_df.attrs.get("ml_meta", {}), now)
     latest = latest_table(frames, names, cfg, regime_df.attrs.get("ml_probs", {}), regime_df.attrs.get("ml_meta", {}))
     # Sharia eligibility is a hard gate for BUY labels, not merely a ranking feature.
     # Unverified candidates remain visible in WATCH with an explicit review reason.
@@ -260,6 +330,18 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     except Exception as e:
         print(f"  [NEWS] تعذر جلب الأخبار: {type(e).__name__}")
         result["news"] = {"market": [], "companies": [], "error": type(e).__name__}
+    # ملخص مشاعر العناوين (معجمي مبسط): عرضي فقط ولا يدخل في أي قرار رقمي.
+    try:
+        result["news"]["sentiment"] = sentiment_summary(result["news"])
+        comp_sent = (result["news"]["sentiment"].get("companies") or {})
+        for p in result.get("picks", []):
+            s = comp_sent.get(str(p.get("code", "")).upper())
+            if s is not None and float(s) <= -1.5 and isinstance(p, dict):
+                cautions = list(p.get("cautions") or [])
+                cautions.append(f"عناوين أخبار سلبة عن السهم في آخر يومين (درجة المشاعر {s})")
+                p["cautions"] = cautions
+    except Exception as e:
+        print(f"  [NEWS] تعذر تلخيص المشاعر: {type(e).__name__}")
     # تحليل المحفظة المحفوظة (إن وُجدت) حتى يدخل في تقرير الصباح تلقائيًا.
     try:
         from .portfolio_store import load_for_daily
@@ -314,6 +396,10 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     n_stale = int(result["signal_counts"].get("STALE", 0))
     if n_stale:
         warnings.append(f"{n_stale} سهم بيانات آخر شمعة له قديمة (موقوف أو متأخر).")
+    # مراقبة انحراف نموذج التعلم الآلي عبر الزمن.
+    ml_drift = _ml_drift_warning(now)
+    if ml_drift:
+        warnings.append(ml_drift)
 
     # شرعية السهم ليست صفة دائمة؛ اعرض عمر مصدر الفرز بدل افتراض استمراره.
     if "sharia_verified_on" in uni.columns:
@@ -343,7 +429,7 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     track = summarize(hist)
 
     save_outputs(result, cls, regime_df, cov, uni, cfg)
-    ran_bt = maybe_backtest(cfg, state, frames, now, force=False)
+    ran_bt = maybe_backtest(cfg, state, frames, now, force=False, eligible_codes=ml_eligible_codes)
     if ran_bt:
         print("تم تحديث نتائج الاختبار التاريخي.")
     # Always expose weak historical evidence, even when the weekly backtest
@@ -355,6 +441,9 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
             bt_warning = performance_warning(bt_summary)
             if bt_warning:
                 warnings.append(bt_warning)
+            ml_warn = ml_overlay_warning(bt_summary.get("ml_overlay") or {})
+            if ml_warn:
+                warnings.append(ml_warn)
     except Exception as e:
         print(f"  [BACKTEST] تعذر تقييم ملخص الأداء: {type(e).__name__}")
 

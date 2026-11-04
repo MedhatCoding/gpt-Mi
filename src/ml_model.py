@@ -15,7 +15,26 @@ from sklearn.metrics import roc_auc_score, brier_score_loss
 FEATURES = [
     "score", "rsi14", "macd_hist", "atr_pct", "ret1", "ret5", "ret20", "ret60",
     "vol_ratio", "updown_vol", "rs_rank", "dist_high252", "sma50_slope",
+    "ret120", "dist_sma200", "breakout_dist",
 ]
+
+
+def _fit_platt(p, y):
+    """Platt scaling: انحدار لوجستي فوق درجات المصنف لتحويلها إلى احتمال معاير.
+
+    يُدرَّب على توقعات خارج العينة (OOF) ويُطبَّق على درجات الإنتاج فقط إذا
+    حسَّن Brier مقارنة بالدرجات الخام؛ يرجع None لو الفئة الواحدة أو الفشل.
+    """
+    try:
+        arr = np.asarray(y)
+        if len(np.unique(arr)) < 2:
+            return None
+        from sklearn.linear_model import LogisticRegression
+        lr = LogisticRegression(C=1e6, max_iter=200)
+        lr.fit(np.asarray(p, dtype=float).reshape(-1, 1), arr)
+        return lr
+    except Exception:
+        return None
 
 def _dataset(frames: dict[str, pd.DataFrame], horizon: int, threshold: float) -> pd.DataFrame:
     rows = []
@@ -164,6 +183,24 @@ def train_predict(frames: dict[str, pd.DataFrame], cfg: dict) -> tuple[dict[str,
         "validation_folds": fold_meta,
     }
 
+    # معايرة احتمالات Platt: تُدرَّب على توقعات OOF، ولا تُطبَّق على الإنتاج
+    # إلا إذا كانت Brier المعايرة أفضل من (أو مساوية لـ) الخام.
+    calibrator = None
+    calibration_meta = {"method": "platt", "applied": False}
+    if bool(mcfg.get("calibration_enabled", True)):
+        calibrator = _fit_platt(p.to_numpy(), yva.to_numpy())
+        if calibrator is not None:
+            p_cal = calibrator.predict_proba(p.to_numpy().reshape(-1, 1))[:, 1]
+            brier_cal = float(brier_score_loss(yva, p_cal))
+            calibration_meta.update({
+                "oof_brier_raw": round(brier, 4),
+                "oof_brier_calibrated": round(brier_cal, 4),
+            })
+            if brier_cal <= brier:
+                calibration_meta["applied"] = True
+            else:
+                calibrator = None
+
     # لا نسمح للنموذج بتغيير ترتيب الفرص إلا إذا اجتاز AUC وحسّن
     # خط الأساس في Brier؛ جودة الترتيب وحدها لا تثبت جودة الاحتمالات.
     min_auc = float(mcfg.get("min_auc", 0.52))
@@ -201,13 +238,17 @@ def train_predict(frames: dict[str, pd.DataFrame], cfg: dict) -> tuple[dict[str,
         if vals.isna().any().any():
             continue
         pr = float(0.55 * rf.predict_proba(vals)[:, 1][0] + 0.45 * deep.predict_proba(vals)[:, 1][0])
+        if calibrator is not None:
+            pr = float(calibrator.predict_proba(np.array([[pr]]))[0, 1])
         latest_rows.append((code, pr))
 
     return dict(latest_rows), {
         "enabled": True, "samples": int(len(data)), **validation_meta,
         "model_used": True, "model": "RandomForest + MLP(32,16)",
+        "calibration": calibration_meta,
         "horizon_days": horizon,
         "net_positive_return": net_threshold,
         "round_trip_cost_pct": cost_pct,
         "gross_return_threshold": gross_threshold,
     }
+

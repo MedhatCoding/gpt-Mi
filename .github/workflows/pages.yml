@@ -23,7 +23,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
-          from datetime import date, datetime, timezone
+          from datetime import date, datetime, timedelta, timezone
           from pathlib import Path
           from zoneinfo import ZoneInfo
 
@@ -37,14 +37,30 @@ jobs:
               if generated.tzinfo is None:
                   raise ValueError("generated_at must include timezone")
               now = datetime.now(ZoneInfo("Africa/Cairo"))
-              age_days = (now.date() - data_date).days
+              # أحدث جلسة EGX متوقعة: أيام التداول الأحد-الخميس بعد الإغلاق،
+              # مع مراعاة الإجازات المسجلة في data/holidays.txt.
+              weekdays = {6, 0, 1, 2, 3}
+              holidays = set()
+              holiday_file = Path("data/holidays.txt")
+              if holiday_file.exists():
+                  for line in holiday_file.read_text(encoding="utf-8").splitlines():
+                      value = line.split("#", 1)[0].strip()
+                      if value:
+                          holidays.add(date.fromisoformat(value))
+              expected = now.date()
+              if not (now.hour >= 15 and expected.weekday() in weekdays and expected not in holidays):
+                  expected -= timedelta(days=1)
+              for _ in range(32):
+                  if expected.weekday() in weekdays and expected not in holidays:
+                      break
+                  expected -= timedelta(days=1)
               generated_age_hours = (now.astimezone(timezone.utc) - generated.astimezone(timezone.utc)).total_seconds() / 3600
-              if age_days < 0 or age_days > 7 or generated_age_hours < 0 or generated_age_hours > 168:
+              if data_date != expected or generated_age_hours < 0 or generated_age_hours > 168:
                   raise SystemExit(
-                      f"رفض النشر: التقرير قديم/غير صالح؛ data_date={data_date}, "
-                      f"age_days={age_days}, generated_age_hours={generated_age_hours:.1f}"
+                      f"رفض النشر: التقرير لا يطابق أحدث جلسة متوقعة؛ data_date={data_date}, "
+                      f"expected_session={expected}, generated_age_hours={generated_age_hours:.1f}"
                   )
-              print(f"تقرير مقبول للنشر: {data_date}; العمر {age_days} يوم.")
+              print(f"تقرير مقبول للنشر: {data_date}; أحدث جلسة متوقعة {expected}.")
           except SystemExit:
               raise
           except Exception as exc:

@@ -63,3 +63,42 @@ def compact_for_llm(news: dict) -> dict:
         "market": [{"title": x["title"], "source": x.get("source")} for x in news.get("market", [])[:6]],
         "companies": [{"code": x.get("code"), "title": x["title"], "source": x.get("source")} for x in news.get("companies", [])[:10]],
     }
+
+
+
+# ------------------------------------------------------------------ مشاعر العناوين
+# تصنيف معجمي مبسط (lexicon) للعناوين العربية والإنجليزية؛ تقدير تقريبي
+# للعرض فقط ولا يدخل في أي قرار رقمي أو نموذج تداول.
+POSITIVE_TERMS = (
+    "ارتفاع", "صعود", "نمو", "أرباح", "توزيعات", "توسع", "زيادة", "قياسي",
+    "surge", "profit", "growth", "gain", "record", "rise", "boost",
+)
+NEGATIVE_TERMS = (
+    "خسارة", "خسائر", "هبوط", "تراجع", "توقف", "تأجيل", "غرامة",
+    "انخفاض", "خفض", "نزاع", "loss", "drop", "fall", "decline", "delay", "suspend",
+)
+
+
+def score_headline(title: str) -> int:
+    """درجة معجمية للعنوان: موجب يزيد وسالب ينقص. ليست تحليل مشاعر دقيقًا."""
+    t = str(title or "").lower()
+    return sum(1 for w in POSITIVE_TERMS if w in t) - sum(1 for w in NEGATIVE_TERMS if w in t)
+
+
+def sentiment_summary(news: dict) -> dict:
+    """متوسط درجات العناوين للسوق ولكل سهم من المختارات."""
+    def avg(items: list[dict]):
+        scores = [score_headline(x.get("title", "")) for x in items]
+        return round(sum(scores) / len(scores), 2) if scores else None
+
+    per_code: dict[str, list[dict]] = {}
+    for x in news.get("companies", []) or []:
+        code = str(x.get("code") or "").upper()
+        if code:
+            per_code.setdefault(code, []).append(x)
+    return {
+        "method": "lexicon",
+        "market": avg(news.get("market", []) or []),
+        "companies": {c: avg(items) for c, items in per_code.items()},
+        "note": "تصنيف معجمي مبسط للعناوين؛ تقدير عرضي لا يدخل في أي قرار رقمي ولا في نموذج التداول.",
+    }

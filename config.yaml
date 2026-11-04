@@ -70,6 +70,12 @@ risk:
 backtest:
   refresh_every_days: 7
   baseline_every_n_bars: 5
+  # انزلاق سعري تقريبي لكل سهم حسب سيولته (تقريب جذر الأمر)؛ يضاف فوق التكاليف الأساسية.
+  liquidity_slippage:
+    enabled: true
+    order_value_egp: 100000
+    coefficient: 0.005
+    cap_pct: 1.0
 ml:
   enabled: true
   score_weight: 0.20
@@ -84,6 +90,17 @@ ml:
   min_brier_improvement: 0.02
   rf_trees: 120
   rf_depth: 6
+  # معايرة احتمالات Platt: تحويل درجات المصنف إلى احتمال معاير على توقعات خارج العينة.
+  calibration_enabled: true
+  # اختبار تاريخي walk-forward لطبقة النموذج فوق الإشارات التقنية (تشغيل أسبوعي مع الاختبار التاريخي).
+  backtest:
+    enabled: true
+    window_days: 60
+    max_windows: 4
+    prob_min: 0.55
+    min_train_days: 400
+    max_train_rows: 60000
+    mlp_max_iter: 40
 llm:
   provider: "gemini"
   anthropic_model: "claude-haiku-4-5-20251001"

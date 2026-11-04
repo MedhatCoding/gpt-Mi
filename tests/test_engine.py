@@ -1318,15 +1318,10 @@ def test_source_freshness_summary_reports_yahoo_lag():
     assert empty["symbols"] == 0 and empty["with_data"] == 0
 
 
-if __name__ == "__main__":
-    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
-    failed = 0
-    for name, fn in tests:
-        try:
-            fn()
-            print(f"  ok   {name}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            import traceback
+# ------------------------------------------------------------------ طبقة التعلم الآلي: اختبار تاريخي walk-forward
+def test_ml_overlay_backtest_filters_technical_trades():
+    from src.ml_backtest import ml_overlay_warning, run_ml_overlay_backtest
 
-            print(f"  FAIL {name}: {type(e).__name__}: {e}")
+    frames = {}
+    for i in range(12):
+        df = make_prices(500 + i, drift=0.0012 if i % 3 else 0.0004, vol=0.018)

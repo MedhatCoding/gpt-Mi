@@ -904,6 +904,36 @@ if active_section == section_labels[2] and more_section == more_labels[3]:
         ]),
         unsafe_allow_html=True,
     )
+    # مراقبة نموذج التعلم الآلي: مقاييس يومية محفوظة من كل تدريب.
+    mlm_path = C.BACKTEST / "ml_metrics.csv"
+    if mlm_path.exists():
+        mlm = load_csv(mlm_path)
+        if mlm is not None and len(mlm) and {"date", "auc", "brier"} <= set(mlm.columns):
+            st.markdown(
+                ui.section(
+                    "مراقبة نموذج التعلم الآلي",
+                    "مقاييس محفوظة يوميًا من كل تدريب: AUC الأعلى أفضل وBrier الأقل أفضل؛ التراجع المتواصل يعني أن النموذج يحتاج مراجعة.",
+                ),
+                unsafe_allow_html=True,
+            )
+            mlm["auc"] = pd.to_numeric(mlm["auc"], errors="coerce")
+            mlm["brier"] = pd.to_numeric(mlm["brier"], errors="coerce")
+            chart = mlm.tail(30).set_index("date")[["auc", "brier"]].dropna(how="all")
+            if len(chart):
+                st.line_chart(chart, height=220)
+            measured = mlm.dropna(subset=["auc"])
+            if len(measured):
+                last = measured.iloc[-1]
+                b = last.get("brier")
+                b_txt = f"{float(b):.3f}" if pd.notna(b) else "غير متاح"
+                st.markdown(
+                    ui.kv_html([
+                        ("آخر تدريب مقيس", ui.bdi(str(last.get("date", "")))),
+                        ("AUC", ui.bdi(f"{float(last['auc']):.3f}")),
+                        ("Brier", ui.bdi(b_txt)),
+                    ]),
+                    unsafe_allow_html=True,
+                )
     cov = load_csv(C.SIGNALS / "coverage.csv")
     if cov is not None:
         # Backward-compatible with older committed coverage.csv files that only

@@ -81,4 +81,8 @@ def compute_indicators(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataFram
     out["high252"] = h.rolling(252, min_periods=60).max()
     out["low10"] = l.rolling(10, min_periods=5).min()
     out["dist_high252"] = c / out["high252"] - 1.0
+    # خصائص إضافية لطبقة التعلم الآلي (كلها سببية: لا تنظر للمستقبل)
+    out["dist_sma200"] = c / out["sma200"] - 1.0
+    out["breakout_dist"] = c / out["high20"] - 1.0
     return out
+

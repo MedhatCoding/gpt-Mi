@@ -67,6 +67,7 @@ def _run_symbol(code: str, f: pd.DataFrame, mask: np.ndarray, cfg: dict, step: i
                         "ret_pct": res["ret_pct"],
                         "days": res["days"],
                         "score": float(f["score"].iloc[i]),
+                        "value_sma20": float(f["value_sma20"].iloc[i]) if "value_sma20" in f.columns else None,
                     }
                 )
                 i = res["exit_idx"] + 1      # لا نفتح صفقة جديدة في نفس السهم قبل خروج القديمة
@@ -89,16 +90,47 @@ def _collect_trades(frames: dict[str, pd.DataFrame], cfg: dict) -> tuple[pd.Data
     return pd.DataFrame(strat), pd.DataFrame(base)
 
 
-def _add_extra_friction(trades: pd.DataFrame, extra_pct: float) -> pd.DataFrame:
-    """Apply an additional fixed round-trip cost without replaying unchanged exits."""
+def _add_extra_friction(trades: pd.DataFrame, extra_pct) -> pd.DataFrame:
+    """تطبيق احتكاك إضافي ذهابًا وإيابًا دون إعادة محاكاة المخارج.
+
+    يقبل رقمًا ثابتًا أو متغيّرًا لكل صفقة (مثل انزلاق السيولة).
+    """
     out = trades.copy()
     if out.empty:
         return out
-    extra_cost = (float(extra_pct) / 100.0) * out["entry"].astype(float)
-    risk = out["risk"].astype(float).replace(0, np.nan)
+    if isinstance(extra_pct, pd.Series):
+        extra = pd.Series(extra_pct, index=out.index).astype(float).fillna(0.0).to_numpy()
+    else:
+        extra = np.full(len(out), float(extra_pct))
+    extra_cost = (extra / 100.0) * out["entry"].astype(float).to_numpy()
+    risk = out["risk"].astype(float).replace(0, np.nan).to_numpy()
     out["r_net"] = out["r_net"].astype(float) - extra_cost / risk
-    out["ret_pct"] = out["ret_pct"].astype(float) - float(extra_pct)
+    out["ret_pct"] = out["ret_pct"].astype(float) - extra
     return out
+
+
+def liquidity_slippage_pct(trades: pd.DataFrame, cfg: dict) -> pd.Series:
+    """تقدير انزلاق سعري لكل صفقة حسب سيولة السهم بدل نسبة ثابتة للجميع.
+
+    تقريب جذر الأمر (square-root impact): ينمو الانزلاق مع الجذر التربيعي
+    لنسبة قيمة الأمر إلى متوسط قيمة التداول اليومي للسهم، مع سقف يحمي من
+    قيم شاذة في الأسهم الرقيقة. تقدير مبسط وليس نموذج تنفيذ دقيقًا.
+    """
+    out = pd.Series(0.0, index=trades.index, dtype=float)
+    ls = cfg.get("backtest", {}).get("liquidity_slippage", {})
+    if trades.empty or not ls.get("enabled", False):
+        return out
+    order_value = max(1.0, float(ls.get("order_value_egp", 100_000)))
+    coef = float(ls.get("coefficient", 0.005))
+    cap = float(ls.get("cap_pct", 1.0))
+    if "value_sma20" not in trades.columns:
+        return out
+    adv = pd.to_numeric(trades["value_sma20"], errors="coerce").astype(float)
+    adv = adv.where(adv > 0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        slip = coef * np.sqrt(order_value / adv) * 100.0
+    slip = slip.clip(upper=cap).fillna(0.0)
+    return slip.reset_index(drop=True).set_axis(trades.index)
 
 
 def run_backtest(frames: dict[str, pd.DataFrame], cfg: dict) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
@@ -154,6 +186,26 @@ def run_backtest(frames: dict[str, pd.DataFrame], cfg: dict) -> tuple[dict, pd.D
             "strategy": _stats(stress_strategy),
             "baseline": _stats(stress_baseline),
         })
+
+    # انزلاق سيولة لكل سهم: يُقدَّر من متوسط قيمة التداول اليومي وقت الإشارة
+    # ويُضاف فوق التكلفة الأساسية كسيناريو تنفيذ أكثر واقعية للأسهم الرقيقة.
+    liq = cfg.get("backtest", {}).get("liquidity_slippage", {})
+    if liq.get("enabled", False) and not st.empty:
+        slip = liquidity_slippage_pct(st, cfg)
+        st_liq = _add_extra_friction(st, slip)
+        liq_section = {
+            "enabled": True,
+            "order_value_egp": liq.get("order_value_egp", 100_000),
+            "coefficient": liq.get("coefficient", 0.005),
+            "cap_pct": liq.get("cap_pct", 1.0),
+            "median_slip_pct": round(float(slip.median()), 3),
+            "max_slip_pct": round(float(slip.max()), 3),
+            "strategy": _stats(st_liq),
+        }
+        if not bs.empty:
+            bs_liq = _add_extra_friction(bs, liquidity_slippage_pct(bs, cfg))
+            liq_section["baseline"] = _stats(bs_liq)
+        summary["liquidity_slippage"] = liq_section
     return summary, st, bs
 
 
@@ -183,3 +235,4 @@ def performance_warning(summary: dict) -> str | None:
             "والتكاليف قبل الاعتماد على الاستراتيجية."
         )
     return None
+
