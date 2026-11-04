@@ -1553,10 +1553,13 @@ if __name__ == "__main__":
             import traceback
 
             print(f"  FAIL {name}: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            # GitHub Actions: الفشل يظهر كـ annotation في واجهة الـ CI بدون فتح اللوج
-            one_line = f"{type(e).__name__}: {e}".replace("\r", " ").replace("\n", " ")[:400]
-            print(f"::error title=FAIL {name}::{one_line}")
+            tb = traceback.format_exc()
+            print(tb)
+            # موضع الفشل يظهر كـ annotation في واجهة الـ CI بدون فتح اللوج
+            frames = [l.strip() for l in tb.splitlines() if l.strip().startswith("File")]
+            where = frames[-1][:150] if frames else ""
+            one_line = f"{type(e).__name__}: {e}".replace("\r", " ").replace("\n", " ")[:200]
+            print(f"::error title=FAIL {name}::{one_line} @ {where}")
         dt = time.monotonic() - t0
         if dt > 10:
             # الاختبار البطيء تحذير: بيانات أهمية تشخيصية مباشرة على الـ commit

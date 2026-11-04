@@ -405,7 +405,9 @@ def train_predict(frames: dict[str, pd.DataFrame], cfg: dict) -> tuple[dict[str,
     importance_meta = {"method": "permutation", "enabled": False, "note": "تقدير تفسيري على عينات التحقق بنماذج الإنتاج؛ للعرض لا للقرار."}
     imp_rows: list[dict] = []
     icfg = mcfg.get("importance") or {}
-    if icfg.get("enabled", True) and len(oof) >= 200:
+    # الافتراضي معطل: كتلة التفسير مكلفة نسبيًا وتُفعَّل في الإنتاج فقط عبر
+    # config.yaml (ml.importance.enabled) حتى لا تُشغل في كل استدعاء اختباري.
+    if icfg.get("enabled", False) and len(oof) >= 200:
         try:
             Xoof = X.loc[oof.index]
             yoof = oof["y"].astype(int)
