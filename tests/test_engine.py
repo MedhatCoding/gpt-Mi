@@ -1334,6 +1334,10 @@ def test_ml_overlay_backtest_filters_technical_trades():
     for i in range(12):
         df = make_prices(500 + i, drift=0.0012 if i % 3 else 0.0004, vol=0.018)
         f = compute_scores(compute_indicators(df), None, None, CFG)
+        # rs_rank مقياس مقطعي يحسبه analyze() من لوحة الأسهم كلها؛ خارج التحليل
+        # يبقى NaN فيُسقط _dataset كل الصفوف فتفرغ النوافذ. قيمة محايدة تكفي هنا
+        # لأن الغرض اختبار بنية walk-forward نفسها لا ترتيب القوة النسبية.
+        f["rs_rank"] = f["rs_rank"].fillna(50.0)
         f["regime_ok"] = True
         frames[f"M{i:02d}"] = f
     cfg = {**CFG, "ml": {**CFG["ml"], "min_samples": 200, "mlp_max_iter": 40, "rf_trees": 40,
