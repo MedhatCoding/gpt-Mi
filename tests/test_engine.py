@@ -11,7 +11,7 @@ import shutil
 import sys
 import tempfile
 import types
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -507,6 +507,29 @@ def test_pipeline_end_to_end():
     tbl = pd.read_csv(TMP / "signals" / "table.csv")
     sig = dict(zip(tbl["code"], tbl["signal"]))
     assert sig["ILLQ"] == "ILLIQUID" and sig["STAL"] == "STALE" and "SHRT" not in sig
+
+
+def test_stale_pipeline_does_not_replace_published_report_or_log_signals():
+    """A stale provider refresh is diagnostic-only and preserves the last good publication."""
+    _reset_outputs()
+    (C.SIGNALS).mkdir(parents=True, exist_ok=True)
+    (C.SIGNALS / "latest.json").write_text('{"data_date":"2026-09-17","sentinel":"keep"}', encoding="utf-8")
+    (C.DATA / "report").mkdir(parents=True, exist_ok=True)
+    (C.DATA / "report" / "latest.json").write_text('{"sentinel":"keep-report"}', encoding="utf-8")
+    original_expected = pipeline.expected_last_session
+    pipeline.expected_last_session = lambda now, cfg: date(2026, 9, 21)
+    try:
+        result, sent = _run(dry_run=True)
+    finally:
+        pipeline.expected_last_session = original_expected
+    assert result["status"] == "not_sent"
+    assert not sent
+    assert json.loads((C.SIGNALS / "latest.json").read_text(encoding="utf-8"))["sentinel"] == "keep"
+    assert json.loads((C.DATA / "report" / "latest.json").read_text(encoding="utf-8"))["sentinel"] == "keep-report"
+    diagnostic = json.loads((C.DATA / "diagnostics" / "last_run.json").read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "blocked_stale_data"
+    assert diagnostic["expected_session"] == "2026-09-21"
+    assert not (C.SIGNALS / "history.csv").exists()
 
 
 def test_pipeline_dry_run_and_missing_secrets_and_alerts():
