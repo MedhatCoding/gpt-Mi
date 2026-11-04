@@ -409,8 +409,11 @@ def train_predict(frames: dict[str, pd.DataFrame], cfg: dict) -> tuple[dict[str,
     # config.yaml (ml.importance.enabled) حتى لا تُشغل في كل استدعاء اختباري.
     if icfg.get("enabled", False) and len(oof) >= 200:
         try:
-            Xoof = X.loc[oof.index]
-            yoof = oof["y"].astype(int)
+            # سقف عينات للتفسير: كتلة عرض لا تحتاج كل الصفوف، والسقف يحفظ ميزانية التشغيل اليومي.
+            imp_max = max(200, int(icfg.get("max_rows", 2000)))
+            oof_imp = oof if len(oof) <= imp_max else oof.sample(n=imp_max, random_state=42).sort_index()
+            Xoof = X.loc[oof_imp.index]
+            yoof = oof_imp["y"].astype(int)
 
             def prob_fn(D):
                 return 0.55 * rf.predict_proba(D)[:, 1] + 0.45 * deep.predict_proba(D)[:, 1]
