@@ -124,6 +124,87 @@ def _eodhd_budget(state: dict, cfg: dict) -> int:
     return max(0, cfg["data"]["eodhd_daily_budget"] - e["calls"])
 
 
+# ---------------------------------------------------------------- EODHD bulk
+def fetch_eodhd_bulk(token: str, state: dict, cfg: dict) -> dict[str, pd.DataFrame] | None:
+    """آخر جلسة لكل أسهم البورصة في طلب واحد بدل طلب لكل سهم.
+
+    يُحسب طلبًا واحدًا فقط من ميزانية EODHD اليومية. لو الخطة/المفتاح الحالي
+    لا يدعم الـ bulk endpoint (401/402/403) نعطّله لباقي اليوم حتى لا نكرر
+    الطلب عبثًا، وتبقى الطلبات الفردية تعمل كالمعتاد.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    skip = state.setdefault("eodhd_bulk", {})
+    if skip.get("failed_date") == today:
+        return None
+    if _eodhd_budget(state, cfg) <= 0:
+        return None
+    exchange = str(cfg["data"].get("eodhd_bulk_exchange", "EGX"))
+    try:
+        r = requests.get(
+            f"https://eodhd.com/api/eod-bulk-last-day/{exchange}",
+            params={"api_token": token, "fmt": "json"},
+            timeout=60,
+        )
+        state["eodhd"]["calls"] += 1
+        if r.status_code in (401, 402, 403):
+            print(f"  [EODHD-bulk] غير متاح مع الخطة/المفتاح الحالي (HTTP {r.status_code})؛ سنكتفي بالطلبات الفردية لباقي اليوم")
+            skip["failed_date"] = today
+            return None
+        if r.status_code != 200:
+            print(f"  [EODHD-bulk] HTTP {r.status_code}")
+            return None
+        rows = r.json()
+        if not isinstance(rows, list) or not rows:
+            print("  [EODHD-bulk] استجابة فارغة")
+            return None
+    except Exception as e:  # noqa: BLE001
+        print(f"  [EODHD-bulk] فشل الطلب: {e}")
+        return None
+    out: dict[str, pd.DataFrame] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code", "")).strip().upper()
+        raw_close = row.get("close")
+        if not code or raw_close in (None, 0, 0.0):
+            continue
+        try:
+            adj_close = float(row.get("adjusted_close", raw_close))
+            factor = adj_close / float(raw_close)
+            df = pd.DataFrame(
+                [{
+                    "open": float(row.get("open") or 0.0) * factor,
+                    "high": float(row.get("high") or 0.0) * factor,
+                    "low": float(row.get("low") or 0.0) * factor,
+                    "close": adj_close,
+                    "volume": float(row.get("volume") or 0.0),
+                }],
+                index=pd.DatetimeIndex([pd.to_datetime(row.get("date"))]),
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        cleaned = _clean(df)
+        if len(cleaned):
+            out[code] = cleaned
+    if not out:
+        print("  [EODHD-bulk] لا صفوف صالحة في الاستجابة")
+        return None
+    print(f"  [EODHD-bulk] وصلت آخر جلسة لـ {len(out)} رمز في طلب واحد")
+    return out
+
+
+def _bulk_newer_than(bulk: dict[str, pd.DataFrame] | None, code: str, ref_date: date | None) -> pd.DataFrame | None:
+    """شمعة الـ bulk للرمز لو هي أحدث من آخر شمعة متوفرة، وإلا None."""
+    if not bulk:
+        return None
+    frame = bulk.get(str(code).strip().upper())
+    if frame is None or not len(frame):
+        return None
+    if ref_date is not None and frame.index[-1].date() <= ref_date:
+        return None
+    return frame
+
+
 # ---------------------------------------------------------------- OANOR (بيانات لحظية للسوق المصري)
 def oanor_key() -> str:
     return (os.environ.get("OANOR_API_KEY") or os.environ.get("OANOR_API_TOKEN") or os.environ.get("OANOR_KEY") or "").strip().strip('"').strip("'")
@@ -238,9 +319,14 @@ def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False)
     d = cfg["data"]
     token = _eodhd_token()
     report = []
+    # طلب تجميعي واحد لآخر جلسة لكل البورصة: يوفر ميزانية EODHD ويغطي تأخر Yahoo.
+    bulk = None
+    if not offline and token and d.get("eodhd_bulk_enabled", False):
+        bulk = fetch_eodhd_bulk(token, state, cfg)
 
     for i, code in enumerate(codes, 1):
-        row = {"code": code, "source": "none", "bars": 0, "first_date": "", "last_date": "", "coverage_years": 0.0, "note": ""}
+        row = {"code": code, "source": "none", "bars": 0, "first_date": "", "last_date": "", "coverage_years": 0.0, "note": "",
+               "yahoo_failed": False, "yahoo_stale": False, "updated_from_bulk": False}
         cached = read_cache(code)
         fresh = None
         backfill_requested = False
@@ -297,18 +383,29 @@ def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False)
             time.sleep(d["request_sleep"])
 
         # A successful HTTP response can still contain stale candles. If Yahoo
-        # did not advance the cache, try the bounded EODHD fallback for a recent overlap.
+        # did not advance the cache, cover the gap from the single bulk request
+        # first (no extra API budget), then fall back to per-symbol EODHD.
         yahoo_stale = (
             fresh is not None and len(fresh) > 0 and cached is not None and len(cached) > 0
             and fresh.index[-1].date() <= cached.index[-1].date()
         )
-        if yahoo_stale and not offline and token and _eodhd_budget(state, cfg) > 0:
-            state["eodhd"]["calls"] += 1
-            recent = fetch_eodhd(code, token, (cached.index[-1] - timedelta(days=10)).date())
-            if recent is not None and len(recent) and recent.index[-1].date() > fresh.index[-1].date():
-                fresh = pd.concat([fresh, recent])
+        row["yahoo_stale"] = bool(yahoo_stale)
+        if not offline:
+            row["yahoo_failed"] = fresh is None
+        if yahoo_stale and not offline:
+            newer_bulk = _bulk_newer_than(bulk, code, cached.index[-1].date())
+            if newer_bulk is not None:
+                fresh = pd.concat([fresh, newer_bulk])
                 fresh = fresh[~fresh.index.duplicated(keep="last")].sort_index()
-                row["note"] = "Yahoo لم يقدم شموعًا أحدث؛ تم التحديث من EODHD"
+                row["note"] = "Yahoo لم يقدم شموعًا أحدث؛ تم التحديث من EODHD bulk (طلب واحد للبورصة)"
+                row["updated_from_bulk"] = True
+            elif token and _eodhd_budget(state, cfg) > 0:
+                state["eodhd"]["calls"] += 1
+                recent = fetch_eodhd(code, token, (cached.index[-1] - timedelta(days=10)).date())
+                if recent is not None and len(recent) and recent.index[-1].date() > fresh.index[-1].date():
+                    fresh = pd.concat([fresh, recent])
+                    fresh = fresh[~fresh.index.duplicated(keep="last")].sort_index()
+                    row["note"] = "Yahoo لم يقدم شموعًا أحدث؛ تم التحديث من EODHD"
 
         if fresh is not None and len(fresh) >= 1:
             merged = fresh
@@ -317,13 +414,24 @@ def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False)
                 merged = merged[~merged.index.duplicated(keep="last")].sort_index()
             write_cache(code, merged)
             source = "yahoo" if cached is None else "cache+yahoo"
-            if "EODHD" in row["note"] or row["note"].startswith("استكمال التاريخ الأقدم"):
+            if "bulk" in row["note"]:
+                source += "+eodhd-bulk"
+            elif "EODHD" in row["note"] or row["note"].startswith("استكمال التاريخ الأقدم"):
                 source += "+eodhd"
             row.update(source=source, bars=len(merged), first_date=str(merged.index[0].date()), last_date=str(merged.index[-1].date()), coverage_years=round((merged.index[-1] - merged.index[0]).days / 365.25, 2))
         elif cached is not None:
             merged, src = cached, "cache"
-            # نحاول نكمّل آخر الشموع من EODHD لو فيه ميزانية
-            if not offline and token and _eodhd_budget(state, cfg) > 0:
+            note = "Yahoo فشل، استخدمنا الكاش"
+            # نكمل آخر الشمعة من طلب التجميع (بدون ميزانية إضافية) قبل الطلب الفردي
+            newer_bulk = _bulk_newer_than(bulk, code, cached.index[-1].date()) if not offline else None
+            if newer_bulk is not None:
+                merged = pd.concat([cached, newer_bulk])
+                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+                write_cache(code, merged)
+                src = "cache+eodhd-bulk"
+                note = "Yahoo فشل؛ آخر جلسة جاءت من EODHD bulk (طلب واحد للبورصة)"
+                row["updated_from_bulk"] = True
+            elif not offline and token and _eodhd_budget(state, cfg) > 0:
                 state["eodhd"]["calls"] += 1
                 # If Yahoo failed while the cache is short, let the fallback attempt
                 # backfill the missing history instead of fetching only recent candles.
@@ -347,8 +455,9 @@ def refresh_all(cfg: dict, codes: list[str], state: dict, offline: bool = False)
                     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
                     write_cache(code, merged)
                     src = "cache+eodhd"
+                    note = "Yahoo فشل؛ تم استكمال آخر الشموع من EODHD"
             row.update(source=src, bars=len(merged), first_date=str(merged.index[0].date()), last_date=str(merged.index[-1].date()), coverage_years=round((merged.index[-1] - merged.index[0]).days / 365.25, 2))
-            row["note"] = "Yahoo فشل، استخدمنا الكاش"
+            row["note"] = note
         elif not offline and token and _eodhd_budget(state, cfg) > 0:
             state["eodhd"]["calls"] += 1
             start = date.today() - timedelta(days=365)  # الخطة المجانية = سنة تاريخ
@@ -427,3 +536,34 @@ def load_prices(codes: list[str], cfg: dict, now: datetime) -> dict[str, pd.Data
         if len(df) >= cfg["data"]["min_bars"]:
             out[c] = df
     return out
+
+
+# ---------------------------------------------------------------- مراقبة حداثة المصادر
+def summarize_source_freshness(cov: pd.DataFrame) -> dict:
+    """ملخص حداثة مصادر البيانات: تشخيص تأخر Yahoo (.CA) وتغطية EODHD.
+
+    يغذّي تقرير اللوحة والتحذيرات اليومية حتى يظهر تأخر المصدر الأساسي
+    بوضوح بدلًا من اكتشافه متأخرًا من بوابة البيانات القديمة فقط.
+    """
+    out = {"symbols": 0, "with_data": 0, "no_data": 0, "yahoo_fresh": 0,
+           "yahoo_stale": 0, "yahoo_failed": 0, "updated_from_bulk": 0}
+    if cov is None or not isinstance(cov, pd.DataFrame) or not len(cov) or "source" not in cov.columns:
+        return out
+    src = cov["source"].astype(str)
+    bars = pd.to_numeric(cov["bars"], errors="coerce").fillna(0) if "bars" in cov.columns else pd.Series(0.0, index=cov.index)
+    with_data = bars > 0
+    if "yahoo_failed" in cov.columns:
+        failed = cov["yahoo_failed"].fillna(False).astype(bool)
+    else:
+        failed = ~with_data
+    stale = cov["yahoo_stale"].fillna(False).astype(bool) if "yahoo_stale" in cov.columns else pd.Series(False, index=cov.index)
+    from_bulk = src.str.contains("bulk", case=False)
+    out["symbols"] = int(len(cov))
+    out["with_data"] = int(with_data.sum())
+    out["no_data"] = int((~with_data).sum())
+    out["yahoo_failed"] = int((failed & with_data).sum())
+    out["yahoo_stale"] = int((stale & with_data).sum())
+    out["updated_from_bulk"] = int((from_bulk & with_data).sum())
+    out["yahoo_fresh"] = int((with_data & ~failed & ~stale).sum())
+    return out
+

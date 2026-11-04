@@ -19,6 +19,8 @@ data:
   min_bars: 150
   max_stale_days: 4
   eodhd_daily_budget: 20
+  eodhd_bulk_enabled: true
+  eodhd_bulk_exchange: "EGX"
   request_sleep: 0.3
 filters:
   min_avg_value_egp: 1500000
@@ -103,3 +105,5 @@ portfolio:
 # build: encrypted-portfolio-daily-sync-2026-10-09
 
 # build: portfolio-store-fix-2026-10-09-2
+
+# build: eodhd-bulk-single-request + source-freshness-monitoring 2026-11-04

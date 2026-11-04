@@ -636,7 +636,7 @@ def test_history_backfill_is_throttled_for_free_sources():
             }, index=idx)
 
         data_fetch.fetch_yahoo_from = fake_fetch
-        cfg = {**CFG, "data": {**CFG["data"], "history_years": 8, "history_backfill_retry_days": 30, "request_sleep": 0}}
+        cfg = {**CFG, "data": {**CFG["data"], "history_years": 8, "history_backfill_retry_days": 30, "request_sleep": 0, "eodhd_bulk_enabled": False}}
         state = {}
         data_fetch.refresh_all(cfg, ["THROTTLE"], state, offline=False)
         data_fetch.refresh_all(cfg, ["THROTTLE"], state, offline=False)
@@ -1094,7 +1094,7 @@ def test_short_yahoo_backfill_uses_budgeted_eodhd_for_older_history():
         data_fetch.fetch_yahoo_from = short_yahoo
         data_fetch.fetch_eodhd = older_eodhd
         data_fetch.time.sleep = lambda *_args, **_kwargs: None
-        cfg = {**CFG, "data": {**CFG["data"], "history_years": 8, "history_backfill_retry_days": 30, "request_sleep": 0, "eodhd_daily_budget": 2}}
+        cfg = {**CFG, "data": {**CFG["data"], "history_years": 8, "history_backfill_retry_days": 30, "request_sleep": 0, "eodhd_daily_budget": 2, "eodhd_bulk_enabled": False}}
         state = {"eodhd": {"date": today.date().isoformat(), "calls": 0}}
         coverage = data_fetch.refresh_all(cfg, [code], state, offline=False)
         assert len(calls) == 1, "EODHD should be used once when Yahoo returns a short backfill"
@@ -1171,6 +1171,153 @@ def test_report_attempt_guard_prevents_duplicate_daily_send():
     assert not allowed
     assert "محاولة إرسال" in reason
 
+def test_eodhd_bulk_covers_stale_symbols_in_one_request():
+    """طلبة bulk واحدة تغطي تأخر Yahoo بدون استهلاك ميزانية لكل سهم."""
+    from src import data_fetch
+
+    code = "BULKY"
+    path = data_fetch.cache_path(code)
+    existed = path.exists()
+    backup = path.read_bytes() if existed else None
+    old_token = os.environ.get("EODHD_API_TOKEN")
+    original_yahoo = data_fetch.fetch_yahoo_from
+    original_eodhd = data_fetch.fetch_eodhd
+    original_bulk = data_fetch.fetch_eodhd_bulk
+    original_sleep = data_fetch.time.sleep
+    per_symbol_calls = []
+    today = pd.Timestamp.today().normalize()
+    try:
+        os.environ["EODHD_API_TOKEN"] = "test-token"
+        cached_idx = pd.date_range(end=today - pd.Timedelta(days=3), periods=300, freq="B")
+        cached = pd.DataFrame({
+            "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.0, "volume": 1000.0,
+        }, index=cached_idx)
+        data_fetch.write_cache(code, cached)
+
+        def stale_yahoo(symbol, start, retries=3):
+            # Yahoo يرد بنجاح لكن بشموع لا تسبق آخر شمعة في الكاش
+            idx = pd.date_range(end=today - pd.Timedelta(days=3), periods=2, freq="B")
+            return pd.DataFrame({
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.0, "volume": 1000.0,
+            }, index=idx)
+
+        def per_symbol_eodhd(symbol, token, start):
+            per_symbol_calls.append(symbol)
+            return None
+
+        def fake_bulk(token, state, cfg):
+            # طلب تجميعي واحد يحسب على الميزانية ويرجع آخر جلسة لكل البورصة
+            state["eodhd"]["calls"] += 1
+            idx = pd.DatetimeIndex([today - pd.Timedelta(days=1)])
+            return {code: pd.DataFrame({
+                "open": 10.5, "high": 11.5, "low": 9.5, "close": 10.5, "volume": 1200.0,
+            }, index=idx)}
+
+        data_fetch.fetch_yahoo_from = stale_yahoo
+        data_fetch.fetch_eodhd = per_symbol_eodhd
+        data_fetch.fetch_eodhd_bulk = fake_bulk
+        data_fetch.time.sleep = lambda *_args, **_kwargs: None
+        cfg = {**CFG, "data": {**CFG["data"], "history_years": 1, "history_backfill_retry_days": 30, "request_sleep": 0, "eodhd_daily_budget": 5, "eodhd_bulk_enabled": True}}
+        state = {"eodhd": {"date": today.date().isoformat(), "calls": 0}}
+        coverage = data_fetch.refresh_all(cfg, [code], state, offline=False)
+        row = coverage.iloc[0]
+        assert state["eodhd"]["calls"] == 1, "bulk request must count once against the daily budget"
+        assert not per_symbol_calls, "stale symbols must be covered by the bulk request, not per-symbol calls"
+        assert str(row["last_date"]) == str((today - pd.Timedelta(days=1)).date())
+        assert "eodhd-bulk" in str(row["source"])
+        assert bool(row["yahoo_stale"])
+        assert bool(row["updated_from_bulk"])
+        summary = data_fetch.summarize_source_freshness(coverage)
+        assert summary["yahoo_stale"] == 1
+        assert summary["updated_from_bulk"] == 1
+        assert summary["yahoo_fresh"] == 0
+    finally:
+        data_fetch.fetch_yahoo_from = original_yahoo
+        data_fetch.fetch_eodhd = original_eodhd
+        data_fetch.fetch_eodhd_bulk = original_bulk
+        data_fetch.time.sleep = original_sleep
+        if old_token is None:
+            os.environ.pop("EODHD_API_TOKEN", None)
+        else:
+            os.environ["EODHD_API_TOKEN"] = old_token
+        if existed:
+            path.write_bytes(backup)
+        else:
+            path.unlink(missing_ok=True)
+
+
+def test_eodhd_bulk_parses_payload_and_disables_unavailable_plans():
+    from src import data_fetch
+
+    original_get = data_fetch.requests.get
+    today = pd.Timestamp.now(tz="UTC").date().isoformat()
+    cfg = {**CFG, "data": {**CFG["data"], "eodhd_daily_budget": 5}}
+
+    class OkResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return [{
+                "code": "7010", "exchange_short_name": "EGX", "date": "2026-11-03",
+                "open": 20.0, "high": 21.0, "low": 19.5, "close": 20.5,
+                "adjusted_close": 20.295, "volume": 100000,
+            }]
+
+    class DeniedResponse:
+        status_code = 401
+
+        @staticmethod
+        def json():
+            return []
+
+    try:
+        data_fetch.requests.get = lambda url, params=None, timeout=None: OkResponse()
+        state = {"eodhd": {"date": today, "calls": 0}}
+        bulk = data_fetch.fetch_eodhd_bulk("test-token", state, cfg)
+        assert bulk is not None and "7010" in bulk
+        frame = bulk["7010"]
+        # تعديل الأسعار بمعامل التعديل حتى تتسق مع Yahoo (auto_adjust)
+        assert abs(float(frame["close"].iloc[0]) - 20.295) < 1e-9
+        assert abs(float(frame["open"].iloc[0]) - 20.0 * (20.295 / 20.5)) < 1e-9
+        assert state["eodhd"]["calls"] == 1
+
+        # الخطة/المفتاح لا يدعم الـ bulk: تعطيل لباقي اليوم بدون طلبات متكررة
+        data_fetch.requests.get = lambda url, params=None, timeout=None: DeniedResponse()
+        state2 = {"eodhd": {"date": today, "calls": 1}}
+        assert data_fetch.fetch_eodhd_bulk("test-token", state2, cfg) is None
+        assert state2["eodhd"]["calls"] == 2, "denied response still consumed one budgeted call"
+        assert state2["eodhd_bulk"]["failed_date"] == today
+        data_fetch.requests.get = lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call again"))
+        assert data_fetch.fetch_eodhd_bulk("test-token", state2, cfg) is None
+    finally:
+        data_fetch.requests.get = original_get
+
+
+def test_source_freshness_summary_reports_yahoo_lag():
+    from src.data_fetch import summarize_source_freshness
+
+    cov = pd.DataFrame({
+        "code": ["A", "B", "C", "D", "E"],
+        "source": ["cache+yahoo", "cache+yahoo+eodhd-bulk", "cache+eodhd-bulk", "cache", "none"],
+        "bars": [500, 400, 300, 200, 0],
+        "yahoo_failed": [False, False, True, True, True],
+        "yahoo_stale": [False, True, False, False, False],
+        "updated_from_bulk": [False, True, True, False, False],
+    })
+    s = summarize_source_freshness(cov)
+    assert s["symbols"] == 5
+    assert s["with_data"] == 4
+    assert s["no_data"] == 1
+    assert s["yahoo_fresh"] == 1
+    assert s["yahoo_stale"] == 1
+    assert s["yahoo_failed"] == 2
+    assert s["updated_from_bulk"] == 2
+    # ملف تغطية فارغ أو قديم بدون أعمدة المراقبة يجب أن يرجع أصفارًا لا انهيارًا
+    empty = summarize_source_freshness(pd.DataFrame())
+    assert empty["symbols"] == 0 and empty["with_data"] == 0
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     failed = 0
@@ -1183,8 +1330,3 @@ if __name__ == "__main__":
             import traceback
 
             print(f"  FAIL {name}: {type(e).__name__}: {e}")
-            traceback.print_exc()
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    shutil.rmtree(TMP, ignore_errors=True)
-    sys.exit(1 if failed else 0)
-

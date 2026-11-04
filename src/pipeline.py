@@ -13,7 +13,7 @@ import pandas as pd
 
 from . import config as C
 from .backtest import run_backtest, performance_warning
-from .data_fetch import fetch_benchmark, fetch_market_indices, fetch_oanor_market, load_prices, refresh_all
+from .data_fetch import fetch_benchmark, fetch_market_indices, fetch_oanor_market, load_prices, refresh_all, summarize_source_freshness
 from .report import build_report, compose_alert
 from .signals import analyze, build_result, classify, latest_table
 from .telegram import send_message
@@ -207,6 +207,7 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     live_market = fetch_oanor_market() if not offline else None
     funds = build_fund_overlay(bench, cfg, state=state)
     cov = refresh_all(cfg, codes, state, offline=offline)
+    source_freshness = summarize_source_freshness(cov)
     prices = load_prices(codes, cfg, now)
     if len(prices) < max(5, int(0.5 * len(codes))):
         raise DataError(f"بيانات غير كافية: {len(prices)} سهم فقط من {len(codes)} وصلت بيانات كافية (Yahoo/EODHD).")
@@ -252,6 +253,8 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
         })
     result["market_indices"] = market_indices
     result["live_market"] = live_market
+    # مراقبة حداثة المصادر: كم رمزًا جاءت بياناته طازجة من Yahoo مقابل bulk/EODHD.
+    result["source_freshness"] = source_freshness
     try:
         result["news"] = fetch_news(result["picks"]) if not offline else {"market": [], "companies": [], "offline": True}
     except Exception as e:
@@ -293,6 +296,15 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
     n_cache = int(cov["source"].astype(str).str.startswith("cache").sum())
     if n_cache:
         warnings.append(f"{n_cache} سهم اتحلل ببيانات محفوظة لأن Yahoo فشل معها.")
+    if not offline and (source_freshness["yahoo_stale"] or source_freshness["yahoo_failed"]):
+        lagging = source_freshness["yahoo_stale"] + source_freshness["yahoo_failed"]
+        available = max(1, source_freshness["with_data"])
+        warnings.append(
+            f"مراقبة حداثة المصادر: Yahoo لم يوفّر أحدث شمعة لـ {source_freshness['yahoo_stale']} رمز "
+            f"وفشل مع {source_freshness['yahoo_failed']} رمز من {source_freshness['with_data']} رمز متاح البيانات "
+            f"({lagging / available:.0%})؛ غطّى طلب EODHD bulk منها {source_freshness['updated_from_bulk']} رمز. "
+            "لو تكرر التأخر عدة جلسات متتالية فمصدر Yahoo نفسه (.CA) متأخر ويجب مراجعته قبل الاعتماد على بياناته."
+        )
     if bench is None or len(bench) < 60:
         warnings.append("لم تتوفر سلسلة EGX30 التاريخية من المزود؛ التحليل استخدم مؤشرًا داخليًا متساوي الأوزان من الأسهم المحللة.")
     if sharia_close is not None:
