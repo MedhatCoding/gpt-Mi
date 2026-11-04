@@ -3,6 +3,7 @@
     python tests/test_data_freshness.py   أو   pytest tests/test_data_freshness.py
 
 ملحوظة: نحدد EGX_DATA_DIR قبل استيراد أي شيء من src، لأن المسارات بتتحدد وقت الاستيراد.
+يُشغَّل ضمن خطوة التستات في egx-daily-report.yml (python tests/test_data_freshness.py).
 """
 from __future__ import annotations
 
