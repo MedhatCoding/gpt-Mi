@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -144,7 +145,13 @@ try:
 except Exception:
     published_data_date = None
 
-if published_data_date is None or published_data_date < expected_data_date:
+# EGX_APP_ALLOW_STALE_FIXTURE=1 للاختبارات الآلية فقط: بيانات الاختبار الوهمية
+# بتاريخ قديم مقصود، فلا يفترض أن تمنع البوابة تشغيل الصفحة كاملة في الاختبار.
+_stale_publication_blocked = (
+    published_data_date is None or published_data_date < expected_data_date
+) and os.environ.get("EGX_APP_ALLOW_STALE_FIXTURE") != "1"
+
+if _stale_publication_blocked:
     shown_date = published_data_date.isoformat() if published_data_date else "غير متاح"
     st.error(
         "تم إيقاف عرض التوصيات لحمايتك: بيانات التقرير قديمة أو تاريخها غير صالح. "
@@ -976,3 +983,4 @@ if active_section == section_labels[2] and more_section == more_labels[4]:
 
 st.markdown(ui.legal_html(), unsafe_allow_html=True)
 st.markdown('<div class="mobile-bottom-nav-spacer" style="height:120px;min-height:120px;width:100%" aria-hidden="true"></div>', unsafe_allow_html=True)
+

@@ -109,19 +109,22 @@ def main():
             result = {"status": "skipped", "detail": "إجازة سوق"}
         else:
             local = now.timetz().replace(tzinfo=None)
-            if not args.force and not (time(10, 50) <= local <= time(11, 20)):
-                result = {"status": "skipped", "detail": "خارج نافذة مراجعة 11 صباحًا بتوقيت القاهرة"}
+            if not args.force and not (time(10, 50) <= local <= time(14, 0)):
+                result = {"status": "skipped", "detail": "خارج نافذة مراجعة الافتتاح 10:50–14:00 بتوقيت القاهرة"}
             else:
                 result = opening_review(cfg, now)
     else:
         local = now.timetz().replace(tzinfo=None)
-        if not args.force and not args.dry_run and not (time(8, 50) <= local <= time(9, 20)):
-            result = {"status": "skipped", "detail": "التقرير التلقائي محدد 09:00 صباحًا بتوقيت القاهرة"}
+        if not args.force and not args.dry_run and not (time(8, 50) <= local <= time(13, 0)):
+            result = {"status": "skipped", "detail": "خارج نافذة التقرير 08:50–13:00 بتوقيت القاهرة (جدولة GitHub قد تتأخر عن 09:00)"}
         else:
             result = pipeline.run(cfg=cfg, force=args.force, dry_run=args.dry_run, offline=args.offline, now=now)
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-    return 1 if result.get("status") == "not_sent" else 0
+    # not_sent ليست فشل تشغيل (مثل بيانات قديمة أو أسرار ناقصة): الخروج بـ 0 يسمح للـ workflow
+    # بتسجيل الحالة وcommit ملفات data/state.json، والأخطاء الحقيقية تظل ترمي استثناء وexit != 0.
+    return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

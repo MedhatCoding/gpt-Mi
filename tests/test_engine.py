@@ -358,7 +358,7 @@ def test_should_run_rules():
     assert not pipeline.should_run(CFG, datetime(2026, 9, 19, 9, 5, tzinfo=CAIRO), st)[0]      # سبت
     assert not pipeline.should_run(CFG, datetime(2026, 10, 6, 9, 5, tzinfo=CAIRO), st)[0]      # إجازة مسجلة
     assert not pipeline.should_run(CFG, datetime(2026, 9, 20, 7, 0, tzinfo=CAIRO), st)[0]      # بدري
-    assert not pipeline.should_run(CFG, datetime(2026, 9, 20, 13, 0, tzinfo=CAIRO), st)[0]     # متأخر
+    assert not pipeline.should_run(CFG, datetime(2026, 9, 20, 14, 30, tzinfo=CAIRO), st)[0]    # متأخر (بعد نهاية نافذة التقرير)
     assert not pipeline.should_run(CFG, SUN_9AM, {"last_sent_date": "2026-09-20"})[0]          # اتبعت
     assert pipeline.should_run(CFG, SUN_9AM, {"last_sent_date": "2026-09-20"}, force=True)[0]
 
@@ -949,7 +949,23 @@ def test_streamlit_app_smoke_run():
     """تشغيل صفحة Streamlit كاملة ببيانات اختبار وهمية لاكتشاف أخطاء منطق الواجهة."""
     _reset_outputs()
     _run(dry_run=True)
-    _run_app()
+    # بيانات الاختبار الوهمية بتاريخ قديم مقصود؛ البوابة الحقيقية تُختبر على حدة أدناه.
+    os.environ["EGX_APP_ALLOW_STALE_FIXTURE"] = "1"
+    try:
+        _run_app()
+    finally:
+        os.environ.pop("EGX_APP_ALLOW_STALE_FIXTURE", None)
+
+
+def test_streamlit_app_blocks_stale_publication_fixture():
+    """بوابة الحماية: التطبيق يوقف العرض ولا يظهر توصيات لبيانات أقدم من آخر جلسة متوقعة."""
+    _reset_outputs()
+    _run(dry_run=True)
+    try:
+        _run_app()
+        raise AssertionError("كان لازم التطبيق يوقف العرض لأن بيانات الاختبار أقدم من آخر جلسة متوقعة")
+    except StopApp:
+        pass
 
 
 
@@ -1171,3 +1187,4 @@ if __name__ == "__main__":
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     shutil.rmtree(TMP, ignore_errors=True)
     sys.exit(1 if failed else 0)
+

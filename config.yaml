@@ -5,7 +5,7 @@
 market:
   timezone: "Africa/Cairo"
   trading_weekdays: [6, 0, 1, 2, 3]
-  report_window: ["08:50", "09:20"] # Daily report target: 09:00 Africa/Cairo; runner and state guard prevent duplicates
+  report_window: ["08:50", "13:00"] # نافذة واسعة: جدولة GitHub Actions قد تتأخر كثيرًا عن 09:00؛ حراس الحالة في data/state.json يمنعون أي إرسال مكرر
   session_close_hour: 15
 universe:
   mode: "sharia_union"

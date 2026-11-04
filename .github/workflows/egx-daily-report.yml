@@ -14,13 +14,13 @@ on:
       - "data/universe.csv"
       - "data/egx33.txt"
       - "data/sharia_extra.csv"
-      - "tests/**"
 
-  # Retry every 10 minutes across the UTC hours that cover Cairo 09:00 and 11:00
-  # in both UTC+2 (winter) and UTC+3 (summer). Python windows + state guards
-  # make retries idempotent and prevent duplicate reports/reviews.
+  # GitHub Actions scheduling is heavily delayed/dropped during the 06-09 UTC peak,
+  # so we retry every 10 minutes (offset from the top of the hour) across a wider
+  # UTC range. Python time windows + state guards decide what actually runs and
+  # prevent duplicate reports/reviews, so extra attempts are safe.
   schedule:
-    - cron: "*/10 6-9 * * *"
+    - cron: "7-57/10 6-12 * * *"
 
   workflow_dispatch:
     inputs:
@@ -79,17 +79,11 @@ jobs:
         if: github.event_name != 'push'
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            # The UTC cron covers both Cairo UTC+2 and UTC+3 seasons.
-            # Python applies the exact 08:50-09:20 and 10:50-11:20 local windows,
-            # plus weekday/holiday and duplicate-send guards.
-            CAIRO_HOUR="$(TZ=Africa/Cairo date +%H)"
-            if [ "$CAIRO_HOUR" = "09" ]; then
-              python run_daily.py
-            elif [ "$CAIRO_HOUR" = "11" ]; then
-              python run_daily.py --opening-review
-            else
-              echo "No scheduled task for Cairo local hour $CAIRO_HOUR; safely skipping."
-            fi
+            # الجدولة الرسمية قد تصل متأخرة عن موعدها؛ بايثون نفسه يقرر داخل كل نافذة
+            # (تقرير 08:50–13:00 ومراجعة افتتاح 10:50–14:00 بتوقيت القاهرة)، وحدات
+            # التكرار في data/state.json تمنع أي إرسال مكرر في نفس اليوم.
+            python run_daily.py
+            python run_daily.py --opening-review
           elif [ "${{ inputs.dry_run }}" = "true" ]; then
             if [ "${{ inputs.force }}" = "true" ]; then
               python run_daily.py --force --dry-run
@@ -103,42 +97,45 @@ jobs:
           fi
 
       - name: Commit generated data
-        if: github.event_name != 'push' && inputs.dry_run != true
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/
           if git diff --cached --quiet; then
             echo "No generated data changes."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             git commit -m "chore: update EGX daily report"
             git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run offline engine and opening-review tests
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || steps.commit.outputs.changed == 'true'
         run: |
           python tests/test_engine.py
           python tests/test_opening_review.py
       # Deploy Pages in this workflow. A GITHUB_TOKEN-triggered push/dispatch
       # does not reliably start a second workflow, so deployment stays in-run.
       - name: Prepare PWA report data
-        if: github.event_name != 'push' && inputs.dry_run != true
+        if: steps.commit.outputs.changed == 'true'
         run: |
           mkdir -p docs/data
           cp data/signals/latest.json docs/data/latest.json
 
       - name: Configure GitHub Pages
-        if: github.event_name != 'push' && inputs.dry_run != true
+        if: steps.commit.outputs.changed == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload PWA artifact
-        if: github.event_name != 'push' && inputs.dry_run != true
+        if: steps.commit.outputs.changed == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs
 
       - name: Deploy PWA
-        if: github.event_name != 'push' && inputs.dry_run != true
+        if: steps.commit.outputs.changed == 'true'
         id: deployment
         uses: actions/deploy-pages@v4
 
@@ -162,3 +159,4 @@ jobs:
           except Exception as exc:
               print(f"REPORT_STATUS=invalid_json: {exc}")
           PY
+

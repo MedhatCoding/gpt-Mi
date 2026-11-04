@@ -21,8 +21,6 @@ from .funds import build_fund_overlay, _score
 from .track_record import load_history, log_signals, save_history, summarize, update_history
 from .universe import build_universe
 from .news import fetch_news
-from .portfolio import evaluate as evaluate_portfolio, risk_summary as portfolio_risk_summary
-from .portfolio_store import github_load, local_load
 from .portfolio import evaluate, risk_summary
 from .data_quality import apply_market_freshness_gate
 
@@ -254,22 +252,6 @@ def _execute(cfg: dict, now: datetime, state: dict, dry_run: bool, offline: bool
         })
     result["market_indices"] = market_indices
     result["live_market"] = live_market
-    # المحفظة مشفرة؛ لا تُحفظ بيانات المالك أو الكميات كنص صريح داخل المستودع.
-    try:
-        holdings, synced = github_load()
-        if not synced:
-            holdings = local_load()
-        if holdings:
-            ptable = cls.copy()
-            ptable["code"] = ptable["code"].astype(str)
-            pdf = evaluate_portfolio(holdings, ptable, funds, result["regime"]["label"], max_single_position_pct=float(cfg.get("portfolio", {}).get("max_single_position_pct", 25)))
-            result["portfolio"] = {
-                "summary": portfolio_risk_summary(pdf),
-                "decisions": pdf[["النوع", "الأصل", "الكمية", "متوسط التكلفة", "السعر الحالي", "الربح/الخسارة %", "النقاط", "القرار", "reason"]].where(pd.notna(pdf), None).to_dict("records") if not pdf.empty else [],
-                "encrypted_sync": synced,
-            }
-    except Exception as e:
-        print(f"  [PORTFOLIO] تعذر تحميل المحفظة: {type(e).__name__}")
     try:
         result["news"] = fetch_news(result["picks"]) if not offline else {"market": [], "companies": [], "offline": True}
     except Exception as e:
@@ -429,3 +411,4 @@ def run(cfg: dict | None = None, force: bool = False, dry_run: bool = False, off
         raise
     finally:
         C.save_state(state)
+
