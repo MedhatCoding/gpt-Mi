@@ -1539,9 +1539,12 @@ def test_feature_importance_logged_to_csv():
 
 
 if __name__ == "__main__":
+    import time
+
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     failed = 0
     for name, fn in tests:
+        t0 = time.monotonic()
         try:
             fn()
             print(f"  ok   {name}")
@@ -1551,6 +1554,13 @@ if __name__ == "__main__":
 
             print(f"  FAIL {name}: {type(e).__name__}: {e}")
             traceback.print_exc()
+            # GitHub Actions: الفشل يظهر كـ annotation في واجهة الـ CI بدون فتح اللوج
+            one_line = f"{type(e).__name__}: {e}".replace("\r", " ").replace("\n", " ")[:400]
+            print(f"::error title=FAIL {name}::{one_line}")
+        dt = time.monotonic() - t0
+        if dt > 10:
+            # الاختبار البطيء تحذير: بيانات أهمية تشخيصية مباشرة على الـ commit
+            print(f"::warning title=SLOW {name}::took {dt:.1f}s")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     shutil.rmtree(TMP, ignore_errors=True)
     sys.exit(1 if failed else 0)

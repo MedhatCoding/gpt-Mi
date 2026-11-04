@@ -3,7 +3,6 @@
     python tests/test_data_freshness.py   أو   pytest tests/test_data_freshness.py
 
 ملحوظة: نحدد EGX_DATA_DIR قبل استيراد أي شيء من src، لأن المسارات بتتحدد وقت الاستيراد.
-يُشغَّل ضمن خطوة التستات في egx-daily-report.yml (python tests/test_data_freshness.py).
 """
 from __future__ import annotations
 
@@ -61,9 +60,12 @@ def test_expected_session_walks_back_over_long_holiday_gap():
 
 
 if __name__ == "__main__":
+    import time
+
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     failed = 0
     for name, fn in tests:
+        t0 = time.monotonic()
         try:
             fn()
             print(f"  ok   {name}")
@@ -73,6 +75,11 @@ if __name__ == "__main__":
 
             traceback.print_exc()
             print(f"  FAIL {name}: {type(e).__name__}: {e}")
+            one_line = f"{type(e).__name__}: {e}".replace("\r", " ").replace("\n", " ")[:400]
+            print(f"::error title=FAIL {name}::{one_line}")
+        dt = time.monotonic() - t0
+        if dt > 10:
+            print(f"::warning title=SLOW {name}::took {dt:.1f}s")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     shutil.rmtree(TMP, ignore_errors=True)
     sys.exit(1 if failed else 0)
