@@ -101,6 +101,37 @@ def load_csv(p: Path, index_col: str | None = None):
     return _csv(str(p), mtime(p), index_col)
 
 
+def _sync_secrets_to_env() -> None:
+    """انقل المفاتيح من Streamlit Secrets إلى متغيرات البيئة حتى يستخدمها الـ pipeline."""
+    try:
+        for name in ("EODHD_API_TOKEN", "EODHD_API_KEY", "GEMINI_API_KEY", "OANOR_API_KEY", "OANOR_API_TOKEN", "OANOR_KEY"):
+            if os.environ.get(name):
+                continue
+            value = str(st.secrets.get(name, "")).strip().strip('"').strip("'")
+            if value:
+                os.environ[name] = value
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _auto_refresh_report(stale_date: str) -> dict:
+    """تحديث وتحليل تلقائي عند فتح اللوحة لو البيانات المنشورة قديمة (كاش 30 دقيقة كحد أقصى)."""
+    _sync_secrets_to_env()
+    from src import pipeline as _pipeline
+
+    app_cfg = C.load_config()
+    app_cfg.setdefault("backtest", {})["refresh_every_days"] = 9999
+    try:
+        result = _pipeline.run(cfg=app_cfg, force=True, dry_run=True, notify_errors=False)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    status = str(result.get("status", ""))
+    if status in ("dry_run", "generated", "sent"):
+        return {"ok": True, "status": status, "data_date": result.get("data_date")}
+    return {"ok": False, "error": str(result.get("detail") or status)[:300]}
+
+
 cfg = C.load_config()
 latest = load_json(C.SIGNALS / "latest.json")
 
@@ -124,6 +155,9 @@ def _expected_latest_egx_session(now, market_cfg):
     return day
 
 if not latest:
+    _boot = _auto_refresh_report("none")
+    if _boot.get("ok"):
+        st.rerun()
     st.markdown(
         '<div class="topbar"><div class="topbar-in"><div><span class="brand-name">GPT-Mi</span>'
         '<span class="brand-sub">Sharia Market Intelligence</span></div></div></div>'
@@ -153,15 +187,22 @@ _stale_publication_blocked = (
 
 if _stale_publication_blocked:
     shown_date = published_data_date.isoformat() if published_data_date else "غير متاح"
+    st.info(
+        "بيانات التقرير المنشورة قديمة (تاريخها " + shown_date + "). "
+        "جارٍ الآن تحديث بيانات السوق وإعادة التحليل تلقائيًا، ممكن يستغرق من دقيقة إلى دقائق. سيب الصفحة شغالة."
+    )
+    refresh = _auto_refresh_report(shown_date)
+    if refresh.get("ok"):
+        st.rerun()
     st.error(
-        "تم إيقاف عرض التوصيات لحمايتك: بيانات التقرير قديمة أو تاريخها غير صالح. "
-        f"تاريخ البيانات المنشورة: {shown_date} — آخر جلسة متوقعة: {expected_data_date.isoformat()}."
+        "تعذر التحديث التلقائي الآن: " + str(refresh.get("error", ""))[:220]
+        + f". تاريخ آخر بيانات منشورة: {shown_date}، وآخر جل࡟سة متوقعة: {expected_data_date.isoformat()}."
     )
     st.warning(
-        "لن تظهر فرص الشراء أو أسعار الدخول ووقف الخسارة حتى ينجح تحديث بيانات السوق "
-        "وإنتاج تقرير موثوق. نجاح الاختبارات وحده لا يكفي."
+        "أعرض آخر تقرير متاح للقراءة فقط إلى أن ينجح التحديث. "
+        "مستويات الدخول والوقف أدناه من بيانات قديمة، راجع السعر الفعلي قبل أي قرار."
     )
-    st.stop()
+    # لا حجب كامل: استمر في عرض آخر تقرير متاح بدل صفحة خطأ صامتة.
 
 report = load_json(C.DATA / "report" / "latest.json") or {}
 table = load_csv(C.SIGNALS / "table.csv")
